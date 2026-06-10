@@ -1,8 +1,9 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .views import (
-    PackViewSet, 
-    OrderViewSet, 
+    PackViewSet,
+    OrderViewSet,
+    RegionViewSet,
     ifthenpay_callback,
     creditcard_success_callback,
     creditcard_error_callback,
@@ -12,6 +13,7 @@ from .views import (
 router = DefaultRouter()
 router.register(r"packs", PackViewSet, basename="packs")
 router.register(r"orders", OrderViewSet, basename="orders")
+router.register(r"regions", RegionViewSet, basename="regions")
 
 urlpatterns = [
     path('callback/ifthenpay/', ifthenpay_callback, name='ifthenpay-callback'),

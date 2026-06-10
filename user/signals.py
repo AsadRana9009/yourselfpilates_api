@@ -21,6 +21,11 @@ def create_teacher_student_visit(sender, instance, created, **kwargs):
         User.objects.filter(pk=instance.pk).update(is_student=expected_is_student)
         # reflect change on current instance to avoid stale attribute
         instance.is_student = expected_is_student
+
+    # Ensure admin users always have is_staff=True for Django admin access
+    if instance.role == 'admin' and not instance.is_staff:
+        User.objects.filter(pk=instance.pk).update(is_staff=True)
+        instance.is_staff = True
     if created:
         if hasattr(instance, 'role') and instance.role in ['professor', 'teacher']:
             if not TeacherVisit.objects.filter(teacher=instance).exists():

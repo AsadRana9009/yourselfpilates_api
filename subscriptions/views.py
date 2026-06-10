@@ -5,9 +5,9 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings
-from .models import Pack, SubscriptionHistory, Order
+from .models import Pack, SubscriptionHistory, Order, Region, PackRegionPrice
 from django.template.loader import render_to_string
-from .serializers import PackSerializer, SubscriptionHistorySerializer, OrderSerializer
+from .serializers import PackSerializer, SubscriptionHistorySerializer, OrderSerializer, RegionSerializer
 from .permissions import IsAdminOrReadOnly
 from .ifthenpay_service import IfThenPayService
 import logging
@@ -33,29 +33,59 @@ class PackViewSet(ModelViewSet):
         return queryset
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def set_region_prices(self, request, pk=None):
+        """Admin: set per-region prices for a pack. Body: {"prices": [{"region_id": 1, "price": "25.00"}]}"""
+        if request.user.role != 'admin':
+            return Response({"error": "Only admins can set region prices."}, status=status.HTTP_403_FORBIDDEN)
+
+        pack = self.get_object()
+        prices = request.data.get('prices', [])
+
+        for entry in prices:
+            region_id = entry.get('region_id')
+            price = entry.get('price')
+            if not region_id or price is None:
+                continue
+            try:
+                region = Region.objects.get(pk=region_id)
+            except Region.DoesNotExist:
+                continue
+            if price == '' or price is None:
+                PackRegionPrice.objects.filter(pack=pack, region=region).delete()
+            else:
+                PackRegionPrice.objects.update_or_create(
+                    pack=pack, region=region,
+                    defaults={'price': price}
+                )
+
+        return Response(PackSerializer(pack, context={'request': request}).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def subscribe(self, request, pk=None):
         """
         Subscribe a professor to a pack with a chosen payment method.
         Accepts payment_method in the request body: 'creditcard', 'multibanco', or 'mbway'.
         For MB WAY, also accepts mbway_phone in the request body.
+        Optionally accepts region_id to use location-specific pricing.
         """
         pack = self.get_object()
         user = request.user
 
-        # Only professors, teachers and students can subscribe
-        if user.role not in ['professor', 'teacher', 'student']:
+        # Admins, professors, teachers, and students can subscribe
+        if user.role not in ['admin', 'professor', 'teacher', 'student']:
             return Response(
-                {"error": "Only professors and students can subscribe to packs."},
+                {"error": "You are not allowed to subscribe to packs."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Enforce role/pack match: professors → professor packs, students → student packs
-        expected_pack_role = 'professor' if user.role in ['professor', 'teacher'] else 'student'
-        if pack.target_role != expected_pack_role:
-            return Response(
-                {"error": f"This pack is not available for your role."},
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # Enforce role/pack match for non-admins: professors → professor packs, students → student packs
+        if user.role != 'admin':
+            expected_pack_role = 'professor' if user.role in ['professor', 'teacher'] else 'student'
+            if pack.target_role != expected_pack_role:
+                return Response(
+                    {"error": "This pack is not available for your role."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         # Check if pack is active
         if not pack.active:
@@ -73,12 +103,25 @@ class PackViewSet(ModelViewSet):
         if payment_method == 'mbway' and not mbway_phone:
             return Response({"error": "mbway_phone is required for MB WAY payments. Format: 351#912345678"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolve region and price
+        region = None
+        price = pack.price
+        region_id = request.data.get('region_id')
+        if region_id:
+            try:
+                region = Region.objects.get(pk=region_id, is_active=True)
+                region_price = PackRegionPrice.objects.filter(pack=pack, region=region).first()
+                if region_price:
+                    price = region_price.price
+            except Region.DoesNotExist:
+                return Response({"error": "Region not found or inactive."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create order without order_id first
         order = Order.objects.create(
             user=user,
             pack=pack,
-            amount=pack.price,
+            amount=price,
+            region=region,
             payment_method=payment_method,
             payment_status='Pendente',
             mbway_phone=mbway_phone if payment_method == 'mbway' else None,
@@ -602,6 +645,7 @@ class OrderViewSet(ModelViewSet):
         pack_id = request.data.get('pack_id')
         payment_method = request.data.get('payment_method', 'manual')
         payment_status_value = request.data.get('payment_status', 'Pago')
+        region_id = request.data.get('region_id')
 
         if not user_id or not pack_id:
             return Response(
@@ -619,13 +663,26 @@ class OrderViewSet(ModelViewSet):
         except Pack.DoesNotExist:
             return Response({"error": "Pack not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Resolve optional region and its price override
+        region = None
+        price = pack.price
+        if region_id:
+            try:
+                region = Region.objects.get(pk=region_id, is_active=True)
+                region_price = PackRegionPrice.objects.filter(pack=pack, region=region).first()
+                if region_price:
+                    price = region_price.price
+            except Region.DoesNotExist:
+                return Response({"error": "Region not found or inactive."}, status=status.HTTP_400_BAD_REQUEST)
+
         # For 'manual' payment method, store as 'multibanco' (closest offline method)
         stored_method = payment_method if payment_method in ['multibanco', 'mbway', 'creditcard'] else 'multibanco'
 
         order = Order.objects.create(
             user=user,
             pack=pack,
-            amount=pack.price,
+            amount=price,
+            region=region,
             payment_method=stored_method,
             payment_status=payment_status_value,
         )
@@ -708,6 +765,19 @@ class OrderViewSet(ModelViewSet):
                 "error": "Failed to check payment status. Please try again later."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class RegionViewSet(ModelViewSet):
+    """CRUD for gym regions/locations. Admins can write; anyone authenticated can read."""
+    queryset = Region.objects.all()
+    serializer_class = RegionSerializer
+    permission_classes = [IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_authenticated and getattr(user, 'role', None) == 'admin':
+            return Region.objects.all()
+        return Region.objects.filter(is_active=True)
 
 
 # Callback endpoint for IfThenPay payment notifications

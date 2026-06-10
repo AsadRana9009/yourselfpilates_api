@@ -3,6 +3,19 @@ from django.conf import settings
 import uuid
 
 
+class Region(models.Model):
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class Pack(models.Model):
     ROLE_CHOICES = [
         ('student', 'Student'),
@@ -18,11 +31,32 @@ class Pack(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     total_hours = models.PositiveIntegerField(default=0, help_text="Total hours included in this pack")
 
+    region = models.ForeignKey(
+        'Region',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='packs',
+        help_text="Gym location this pack belongs to (optional)",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.title
+
+
+class PackRegionPrice(models.Model):
+    pack = models.ForeignKey(Pack, related_name='region_prices', on_delete=models.CASCADE)
+    region = models.ForeignKey(Region, related_name='pack_prices', on_delete=models.CASCADE)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        unique_together = ('pack', 'region')
+
+    def __str__(self):
+        return f"{self.pack.title} - {self.region.name}: €{self.price}"
 
 
 class Order(models.Model):
@@ -69,6 +103,16 @@ class Order(models.Model):
     ccard_payment_url = models.TextField(blank=True, null=True, help_text="IfThenPay payment page URL")
     ccard_signature_key = models.CharField(max_length=100, blank=True, null=True, help_text="Signature key (sk) for verification")
     
+    # Location / Region
+    region = models.ForeignKey(
+        Region,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='orders',
+        help_text="Gym location selected by the user at purchase time"
+    )
+
     # IfThenPay tracking
     request_id = models.CharField(max_length=100, blank=True, null=True, help_text="IfThenPay RequestId")
     

@@ -1,13 +1,32 @@
 from rest_framework import serializers
 from django.conf import settings
-from .models import Pack, SubscriptionHistory, Order
+from .models import Pack, SubscriptionHistory, Order, Region, PackRegionPrice
+
+
+class RegionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Region
+        fields = ['id', 'name', 'slug', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class PackRegionPriceSerializer(serializers.ModelSerializer):
+    region_name = serializers.CharField(source='region.name', read_only=True)
+    region_slug = serializers.CharField(source='region.slug', read_only=True)
+
+    class Meta:
+        model = PackRegionPrice
+        fields = ['id', 'region', 'region_name', 'region_slug', 'price']
 
 
 class PackSerializer(serializers.ModelSerializer):
+    region_prices = PackRegionPriceSerializer(many=True, read_only=True)
+    region_name = serializers.CharField(source='region.name', read_only=True, default=None)
+
     class Meta:
         model = Pack
-        fields = ["id", "title", "description", "image", "active", "is_public", "target_role", "price", "total_hours", "created_at", "updated_at"]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        fields = ["id", "title", "description", "image", "active", "is_public", "target_role", "price", "total_hours", "region", "region_name", "region_prices", "created_at", "updated_at"]
+        read_only_fields = ["id", "region_name", "created_at", "updated_at"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -36,7 +55,8 @@ class OrderSerializer(serializers.ModelSerializer):
     pack_details = PackSerializer(source='pack', read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
     user_name = serializers.CharField(source='user.full_name', read_only=True)
-    
+    region_name = serializers.CharField(source='region.name', read_only=True, default=None)
+
     class Meta:
         model = Order
         fields = [
@@ -44,13 +64,13 @@ class OrderSerializer(serializers.ModelSerializer):
             'amount', 'payment_method', 'payment_status', 'mb_key', 'mb_entity',
             'mb_reference', 'order_id', 'request_id', 'expiry_date', 'mbway_phone',
             'ccard_payment_url', 'created_at', 'paid_at', 'payment_method_updated_at',
-            'previous_payment_method'
+            'previous_payment_method', 'region', 'region_name',
         ]
         read_only_fields = [
-            'id', 'user', 'pack', 'amount', 'mb_key', 'mb_entity', 'mb_reference', 
-            'order_id', 'request_id', 'expiry_date', 'created_at', 'paid_at', 
+            'id', 'user', 'pack', 'amount', 'mb_key', 'mb_entity', 'mb_reference',
+            'order_id', 'request_id', 'expiry_date', 'created_at', 'paid_at',
             'payment_status', 'ccard_payment_url', 'payment_method_updated_at',
-            'previous_payment_method'
+            'previous_payment_method', 'region_name',
         ]
     
     def validate_payment_method(self, value):
