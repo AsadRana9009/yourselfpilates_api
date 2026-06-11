@@ -169,7 +169,7 @@ AUTH_USER_MODEL = 'user.User'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
     "DEFAULT_SCHEMA_CLASS": 'drf_spectacular.openapi.AutoSchema',
@@ -177,12 +177,30 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
 }
 
+from datetime import timedelta
+
+# JWT Settings
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'AUTH_HEADER_NAME': 'HTTP_AUTHORIZATION',
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+}
+
 SPECTACULAR_SETTINGS = {
     'TITLE': 'YourselfPilot',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
-    'SECURITY': [{'TokenAuth': []}],
+    'SECURITY': [{'TokenAuth': [], 'JWTAuth': []}],
     'COMPONENTS': {
         'securitySchemes': {
             'TokenAuth': {
@@ -190,6 +208,12 @@ SPECTACULAR_SETTINGS = {
                 'in': 'header',
                 'name': 'Authorization',
                 'description': 'Token-based authentication. Use: Token <your_token>',
+            },
+            'JWTAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'JWT',
+                'description': 'JWT authentication. Use: Bearer <access_token>',
             }
         }
     },
@@ -204,13 +228,23 @@ FRONTEND_URL=os.getenv('FRONTEND_URL', 'http://localhost:8002')
 EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
 
 # SMTP Settings (used when EMAIL_BACKEND is smtp)
-EMAIL_HOST = 'mail.yourselfpilates.pt'
-EMAIL_PORT = 465 
-EMAIL_USE_SSL = True  
-EMAIL_USE_TLS = False
-EMAIL_HOST_USER = 'noreply@yourselfpilates.pt'
-EMAIL_HOST_PASSWORD = 'B43[21v?YL+!'
-DEFAULT_FROM_EMAIL = 'noreply@yourselfpilates.pt'
+# Option 1: Your current SMTP server
+# EMAIL_HOST = 'mail.yourselfpilates.pt'
+# EMAIL_PORT = 587  # Try port 587 with TLS instead of 465 with SSL
+# EMAIL_USE_SSL = False
+# EMAIL_USE_TLS = True  # Enable TLS instead of SSL
+# EMAIL_HOST_USER = 'noreply@yourselfpilates.pt'
+# EMAIL_HOST_PASSWORD = 'B43[21v?YL+!'
+# DEFAULT_FROM_EMAIL = 'noreply@yourselfpilates.pt'
+
+# Option 2: Gmail SMTP (currently active for testing)
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_SSL = False
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'sanamobin074@gmail.com'
+EMAIL_HOST_PASSWORD = 'rlpi saln bwoi edxn'
+DEFAULT_FROM_EMAIL = 'sanamobin074@gmail.com'
 
 # IGLOO Configuration
 # IGLOO_DEVICE_ID should be set to the Keypad (EK1X...) for algoPIN integration

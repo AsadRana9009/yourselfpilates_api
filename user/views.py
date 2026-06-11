@@ -1,15 +1,19 @@
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import generics, viewsets, status, permissions
 from rest_framework.exceptions import NotFound
 from rest_framework.authtoken.models import Token
 
-from user.models import User, Student
+from user.models import User, Student, EmailVerificationOTP
 from .permissions import IsAdmin
-from user.serializers import UserSerializer, UserAdminSerializer, StudentSerializer, AuthTokenSerializer
+from user.serializers import (
+    UserSerializer, UserAdminSerializer, StudentSerializer, AuthTokenSerializer,
+    StudentRegistrationSerializer, StudentLoginSerializer, VerifyEmailSerializer, ResendVerificationOTPSerializer
+)
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 from django.contrib.auth.tokens import default_token_generator
+from django.contrib.auth import get_user_model
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -20,6 +24,150 @@ from .models import PasswordResetOTP
 from .serializers import RequestPasswordResetOTPSerializer, VerifyPasswordResetOTPSerializer, ConfirmPasswordResetOTPSerializer, ResetPasswordWithOTPSerializer
 from django.utils import timezone
 import random
+
+
+class StudentRegistrationView(APIView):
+    """
+    Student registration endpoint with JWT authentication.
+    POST /api/user/student/register/
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=StudentRegistrationSerializer,
+        responses={201: StudentRegistrationSerializer},
+        description="Register a new student with email address, password, full name, and contact number. Requires email verification."
+    )
+    def post(self, request):
+        serializer = StudentRegistrationSerializer(data=request.data)
+        if serializer.is_valid():
+            validated_data = serializer.validated_data
+            email = validated_data.get('email').lower()
+
+            # Generate 6-digit OTP for email verification
+            otp_code = f"{random.randint(100000, 999999)}"
+            expires_at = timezone.now() + timezone.timedelta(minutes=30)
+
+            # Store registration data in OTP record (don't create user yet)
+            registration_data = {
+                'email': email,
+                'password': validated_data.get('password'),
+                'full_name': validated_data.get('full_name'),
+                'contact_number': validated_data.get('contact_number'),
+                'role': 'student',
+                'is_student': True,
+                'is_public': True,
+                'is_active': True
+            }
+
+            try:
+                # Clean up any existing unused OTPs for this email
+                EmailVerificationOTP.objects.filter(
+                    email=email,
+                    is_used=False
+                ).delete()
+
+                # Create EmailVerificationOTP record (no user created yet)
+                EmailVerificationOTP.objects.create(
+                    code=otp_code,
+                    email=email,
+                    expires_at=expires_at,
+                    registration_data=registration_data
+                )
+
+                # Send verification email
+                send_mail(
+                    'Verify Your Email Address - Yourself Pilates',
+                    (
+                        f'Dear {validated_data.get("full_name")},\n\n'
+                        f'Thank you for registering as a student on Yourself Pilates!\n'
+                        f'\n'
+                        f'Please use the following One-Time Password (OTP) to verify your email address:\n'
+                        f'\n'
+                        f'OTP: {otp_code}\n'
+                        f'\n'
+                        f'This OTP is valid for 30 minutes. After verification, you can log in to your account.\n'
+                        f'\n'
+                        f'If you did not register for an account, please ignore this email or contact support.\n\n'
+                        f'Best regards,\nYourself Pilates Team'
+                    ),
+                    settings.DEFAULT_FROM_EMAIL,
+                    [email],
+                    fail_silently=False,
+                )
+
+                return Response({
+                    "message": "Student registered successfully. Please check your email for the verification code.",
+                    "email": email,
+                    "full_name": validated_data.get('full_name'),
+                    "next_step": "Please verify your email using the OTP sent to your email address."
+                }, status=status.HTTP_201_CREATED)
+
+            except Exception as e:
+                # If email sending fails, clean up and return error
+                try:
+                    EmailVerificationOTP.objects.filter(email=email, code=otp_code).delete()
+                except:
+                    pass  # Best effort cleanup
+
+                return Response({
+                    "error": "Failed to send verification email. Please try again later.",
+                    "details": str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class StudentLoginView(APIView):
+    """
+    Student login endpoint with JWT authentication.
+    POST /api/user/student/login/
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=StudentLoginSerializer,
+        responses={200: StudentLoginSerializer},
+        description="Login for students with JWT tokens"
+    )
+    def post(self, request):
+        serializer = StudentLoginSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+
+            # Get student record to include is_verified
+            from .models import Student
+            try:
+                student_record = user.student_profile
+                is_verified = student_record.is_verified
+            except Student.DoesNotExist:
+                is_verified = None
+
+            # Generate JWT tokens
+            from rest_framework_simplejwt.tokens import RefreshToken
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                "message": "Login successful",
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "full_name": user.full_name,
+                    "role": user.role,
+                    "contact_number": user.contact_number,
+                    "is_verified": is_verified,
+                },
+                "tokens": {
+                    "refresh": str(refresh),
+                    "access": str(refresh.access_token),
+                },
+                "token_type": "Bearer"
+            }, status=status.HTTP_200_OK)
+
+        return Response(serializer.errors, status=status.HTTP_401_UNAUTHORIZED)
 
 class LoginView(APIView):
     """Login endpoint that returns a Django auth token along with user details."""
@@ -101,10 +249,32 @@ class UserAdminViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def approve(self, request):
         user_id = request.query_params.get('user_id')
-        user = User.objects.get(id=user_id)
-        user.is_active = True
-        user.save()
-        return Response(self.get_serializer(user).data)
+        if not user_id:
+            return Response({
+                'error': 'user_id parameter is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({
+                'error': f'User with id {user_id} not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'error': 'An error occurred while fetching user',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            user.is_active = True
+            user.save()
+            return Response(self.get_serializer(user).data)
+        except Exception as e:
+            return Response({
+                'error': 'An error occurred while updating user',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @extend_schema(
         parameters=[
@@ -120,15 +290,44 @@ class UserAdminViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def cancel(self, request):
         user_id = request.query_params.get('user_id')
-        user = User.objects.get(id=user_id)
-        user.is_active = False
-        user.save()
-        return Response(self.get_serializer(user).data)
+        if not user_id:
+            return Response({
+                'error': 'user_id parameter is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({
+                'error': f'User with id {user_id} not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'error': 'An error occurred while fetching user',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            user.is_active = False
+            user.save()
+            return Response(self.get_serializer(user).data)
+        except Exception as e:
+            return Response({
+                'error': 'An error occurred while updating user',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'], url_path='top_up_hours')
     def top_up_hours(self, request, pk=None):
         """Admin: manually add or set remaining_hours for a professor."""
-        user = self.get_object()
+        try:
+            user = self.get_object()
+        except Exception as e:
+            return Response(
+                {"error": "User not found.", "details": str(e)},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
         hours = request.data.get('hours')
         mode = request.data.get('mode', 'add')  # 'add' or 'set'
 
@@ -141,28 +340,41 @@ class UserAdminViewSet(viewsets.ModelViewSet):
         try:
             hours = int(hours)
             if hours < 0:
-                raise ValueError
-        except (ValueError, TypeError):
+                raise ValueError("Hours cannot be negative")
+        except (ValueError, TypeError) as e:
             return Response(
-                {"error": "hours must be a non-negative integer."},
+                {"error": "hours must be a non-negative integer.", "details": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if mode == 'set':
-            user.remaining_hours = hours
-        else:
-            user.remaining_hours = (user.remaining_hours or 0) + hours
-            user.total_purchased_hours = (user.total_purchased_hours or 0) + hours
+        if mode not in ['add', 'set']:
+            return Response(
+                {"error": "mode must be either 'add' or 'set'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        user.save(update_fields=['remaining_hours', 'total_purchased_hours'])
-        return Response(
-            {
-                "message": f"Hours updated successfully.",
-                "remaining_hours": float(user.remaining_hours),
-                "total_purchased_hours": float(user.total_purchased_hours),
-            },
-            status=status.HTTP_200_OK,
-        )
+        try:
+            if mode == 'set':
+                user.remaining_hours = hours
+            else:
+                user.remaining_hours = (user.remaining_hours or 0) + hours
+                user.total_purchased_hours = (user.total_purchased_hours or 0) + hours
+
+            user.save(update_fields=['remaining_hours', 'total_purchased_hours'])
+            return Response(
+                {
+                    "message": f"Hours updated successfully.",
+                    "remaining_hours": float(user.remaining_hours),
+                    "total_purchased_hours": float(user.total_purchased_hours),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        except Exception as e:
+            return Response(
+                {"error": "Failed to update hours. Please try again.", "details": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 class StudentViewSet(viewsets.ModelViewSet):
@@ -232,16 +444,31 @@ class StudentViewSet(viewsets.ModelViewSet):
         professor_id = request.query_params.get('professor_id')
 
         if not professor_id:
-            return Response({"detail": "professor_id is required."}, status=400)
+            return Response({
+                "error": "professor_id is required."
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            professor_id = int(professor_id)
+        except (ValueError, TypeError):
+            return Response({
+                "error": "professor_id must be a valid integer."
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             professor = User.objects.get(id=professor_id, role='professor')
         except User.DoesNotExist:
             raise NotFound("Professor not found.")
 
-        students = Student.objects.filter(professor=professor)
-        serializer = self.get_serializer(students, many=True)
-        return Response(serializer.data)
+        try:
+            students = Student.objects.filter(professor=professor)
+            serializer = self.get_serializer(students, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response({
+                "error": "Failed to fetch students.",
+                "details": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(request=RequestPasswordResetOTPSerializer)
 class RequestPasswordResetOTPView(APIView):
@@ -249,33 +476,47 @@ class RequestPasswordResetOTPView(APIView):
         serializer = RequestPasswordResetOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
+
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
+            # Return success message anyway to prevent email enumeration
             return Response({'message': 'If the email exists, an OTP has been sent for verification.'})
-        # Generate 4-digit OTP
-        otp_code = f"{random.randint(1000, 9999)}"
-        expires_at = timezone.now() + timezone.timedelta(minutes=10)
-        PasswordResetOTP.objects.create(user=user, code=otp_code, expires_at=expires_at)
-        from django.core.mail import send_mail
-        send_mail(
-            'Password Reset OTP',
-            (
-                f'Dear {user.full_name},\n\n'
-                f'We have received a request to reset the password for your account associated with this email address.\n'
-                f'\n'
-                f'Please use the following One-Time Password (OTP) to proceed with resetting your password:\n'
-                f'\n'
-                f'OTP: {otp_code}\n'
-                f'\n'
-                f'This OTP is valid for 10 minutes. If you did not request a password reset, please ignore this email or contact support.\n\n'
-                f'Best regards,\nYourself Pilates Team'
-            ),
-            settings.DEFAULT_FROM_EMAIL,
-            [user.email],
-            fail_silently=False,
-        )
-        return Response({'message': 'OTP sent to your email for verification.'})
+
+        try:
+            # Clean up any existing OTPs for this user
+            PasswordResetOTP.objects.filter(user=user, is_used=False).delete()
+
+            # Generate 4-digit OTP
+            otp_code = f"{random.randint(1000, 9999)}"
+            expires_at = timezone.now() + timezone.timedelta(minutes=10)
+            PasswordResetOTP.objects.create(user=user, code=otp_code, expires_at=expires_at)
+
+            # Send email
+            send_mail(
+                'Password Reset OTP',
+                (
+                    f'Dear {user.full_name},\n\n'
+                    f'We have received a request to reset the password for your account associated with this email address.\n'
+                    f'\n'
+                    f'Please use the following One-Time Password (OTP) to proceed with resetting your password:\n'
+                    f'\n'
+                    f'OTP: {otp_code}\n'
+                    f'\n'
+                    f'This OTP is valid for 10 minutes. If you did not request a password reset, please ignore this email or contact support.\n\n'
+                    f'Best regards,\nYourself Pilates Team'
+                ),
+                settings.DEFAULT_FROM_EMAIL,
+                [user.email],
+                fail_silently=False,
+            )
+            return Response({'message': 'OTP sent to your email for verification.'})
+
+        except Exception as e:
+            return Response({
+                'error': 'Failed to send OTP email. Please try again later.',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(request=VerifyPasswordResetOTPSerializer)
 class VerifyPasswordResetOTPView(APIView):
@@ -285,18 +526,47 @@ class VerifyPasswordResetOTPView(APIView):
         email = serializer.validated_data['email']
         otp = serializer.validated_data['otp']
         new_password = serializer.validated_data['new_password']
+
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({'error': 'Invalid email or OTP.'}, status=400)
-        otp_obj = PasswordResetOTP.objects.filter(user=user, code=otp, is_used=False).order_by('-created_at').first()
-        if not otp_obj or otp_obj.is_expired():
-            return Response({'error': 'Invalid or expired OTP.'}, status=400)
-        user.set_password(new_password)
-        user.save()
-        otp_obj.is_used = True
-        otp_obj.save()
-        return Response({'success': True})
+            return Response({
+                'error': 'Invalid email or OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get the latest unused OTP for this user
+        otp_obj = PasswordResetOTP.objects.filter(
+            user=user,
+            code=otp,
+            is_used=False
+        ).order_by('-created_at').first()
+
+        if not otp_obj:
+            return Response({
+                'error': 'Invalid OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if otp_obj.is_expired():
+            return Response({
+                'error': 'OTP has expired. Please request a new one.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Use transaction to ensure atomicity
+            from django.db import transaction
+            with transaction.atomic():
+                user.set_password(new_password)
+                user.save()
+                otp_obj.is_used = True
+                otp_obj.save()
+
+            return Response({'success': True, 'message': 'Password reset successfully.'})
+
+        except Exception as e:
+            return Response({
+                'error': 'Failed to reset password. Please try again.',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(request=ConfirmPasswordResetOTPSerializer)
 class ConfirmPasswordResetOTPView(APIView):
@@ -305,17 +575,43 @@ class ConfirmPasswordResetOTPView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email']
         otp = serializer.validated_data['otp']
+
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({'error': 'Invalid email or OTP.'}, status=400)
-        otp_obj = PasswordResetOTP.objects.filter(user=user, code=otp, is_used=False).order_by('-created_at').first()
-        if not otp_obj or otp_obj.is_expired():
-            return Response({'error': 'Invalid or expired OTP.'}, status=400)
-        # Mark OTP as confirmed (but not used)
-        otp_obj.is_used = False
-        otp_obj.save()
-        return Response({'success': True})
+            return Response({
+                'error': 'Invalid email or OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get the latest unused OTP for this user
+        otp_obj = PasswordResetOTP.objects.filter(
+            user=user,
+            code=otp,
+            is_used=False
+        ).order_by('-created_at').first()
+
+        if not otp_obj:
+            return Response({
+                'error': 'Invalid OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if otp_obj.is_expired():
+            return Response({
+                'error': 'OTP has expired. Please request a new one.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # OTP is valid - confirm it (but don't mark as used yet)
+        try:
+            otp_obj.save()  # Update timestamp to show it was confirmed
+            return Response({
+                'success': True,
+                'message': 'OTP confirmed. You can now reset your password.'
+            })
+        except Exception as e:
+            return Response({
+                'error': 'Failed to confirm OTP. Please try again.',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @extend_schema(request=ResetPasswordWithOTPSerializer)
 class ResetPasswordWithOTPView(APIView):
@@ -325,15 +621,261 @@ class ResetPasswordWithOTPView(APIView):
         email = serializer.validated_data['email']
         otp = serializer.validated_data['otp']
         new_password = serializer.validated_data['new_password']
+
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({'error': 'Invalid email or OTP.'}, status=400)
-        otp_obj = PasswordResetOTP.objects.filter(user=user, code=otp, is_used=False).order_by('-created_at').first()
-        if not otp_obj or otp_obj.is_expired():
-            return Response({'error': 'Invalid or expired OTP.'}, status=400)
-        user.set_password(new_password)
-        user.save()
-        otp_obj.is_used = True
-        otp_obj.save()
-        return Response({'message': 'Your password has been successfully reset. You can login now.'})
+            return Response({
+                'error': 'Invalid email or OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get the latest unused OTP for this user
+        otp_obj = PasswordResetOTP.objects.filter(
+            user=user,
+            code=otp,
+            is_used=False
+        ).order_by('-created_at').first()
+
+        if not otp_obj:
+            return Response({
+                'error': 'Invalid OTP.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if otp_obj.is_expired():
+            return Response({
+                'error': 'OTP has expired. Please request a new one.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Use transaction to ensure atomicity
+            from django.db import transaction
+            with transaction.atomic():
+                user.set_password(new_password)
+                user.save()
+                otp_obj.is_used = True
+                otp_obj.save()
+
+            return Response({
+                'message': 'Your password has been successfully reset. You can login now.'
+            })
+
+        except Exception as e:
+            return Response({
+                'error': 'Failed to reset password. Please try again.',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VerifyGmailEmailView(APIView):
+    """
+    Verify student Gmail address with OTP.
+    POST /api/user/student/verify-email/
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=VerifyEmailSerializer,
+        responses={200: None},
+        description="Verify student Gmail address using OTP code sent during registration"
+    )
+    def post(self, request):
+        serializer = VerifyEmailSerializer(data=request.data)
+        if serializer.is_valid():
+            email = serializer.validated_data['email']
+            otp = serializer.validated_data['otp']
+
+            # Get the latest unused OTP for this email
+            otp_obj = EmailVerificationOTP.objects.filter(
+                email=email,
+                is_used=False
+            ).order_by('-created_at').first()
+
+            if not otp_obj:
+                return Response({
+                    'error': 'No verification OTP found for this email. Please request a new one.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if otp_obj.is_expired():
+                return Response({
+                    'error': 'OTP has expired. Please request a new verification code.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            if otp_obj.code != otp:
+                return Response({
+                    'error': 'Invalid OTP code. Please check and try again.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Use transaction to handle race conditions and ensure atomicity
+            from django.db import transaction
+            try:
+                with transaction.atomic():
+                    # Double-check if user already exists (prevent race condition)
+                    if User.objects.filter(email=email).exists():
+                        return Response({
+                            'error': 'An account with this email already exists. Please login instead.'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    # OTP is valid - create the user now
+                    registration_data = otp_obj.registration_data
+
+                    # Create user with hashed password
+                    user = get_user_model().objects.create_user(
+                        email=registration_data['email'],
+                        password=registration_data['password'],
+                        full_name=registration_data['full_name'],
+                        contact_number=registration_data['contact_number'],
+                        role=registration_data['role'],
+                        is_student=registration_data['is_student'],
+                        is_public=registration_data['is_public'],
+                        is_active=registration_data['is_active']
+                    )
+
+                    # Mark OTP as used and link to user
+                    otp_obj.is_used = True
+                    otp_obj.user = user
+                    otp_obj.save()
+
+                    # Create or update student record with verified status
+                    from .models import Student
+                    student_record, created = Student.objects.get_or_create(
+                        user=user,
+                        defaults={
+                            'full_name': user.full_name,
+                            'email': user.email,
+                            'contact_number': user.contact_number,
+                            'is_public': True,
+                            'is_verified': True
+                        }
+                    )
+                    if not created:
+                        # Update existing student record
+                        student_record.is_verified = True
+                        student_record.full_name = user.full_name
+                        student_record.email = user.email
+                        student_record.contact_number = user.contact_number
+                        student_record.is_public = True
+                        student_record.save()
+
+                    # Generate JWT tokens for the verified student
+                    from rest_framework_simplejwt.tokens import RefreshToken
+                    refresh = RefreshToken.for_user(user)
+
+                    return Response({
+                        "message": "Email verified successfully! Your account has been created.",
+                        "user": {
+                            "id": user.id,
+                            "email": user.email,
+                            "full_name": user.full_name,
+                            "role": user.role,
+                            "is_verified": True,
+                        },
+                        "tokens": {
+                            "refresh": str(refresh),
+                            "access": str(refresh.access_token),
+                        },
+                        "token_type": "Bearer"
+                    }, status=status.HTTP_200_OK)
+
+            except Exception as e:
+                return Response({
+                    'error': 'Failed to create account. Please try again.',
+                    'details': str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ResendVerificationOTPView(APIView):
+    """
+    Resend verification OTP for student registration.
+    POST /api/user/student/resend-otp/
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=ResendVerificationOTPSerializer,
+        responses={200: None},
+        description="Resend verification OTP to student email address"
+    )
+    def post(self, request):
+        serializer = ResendVerificationOTPSerializer(data=request.data)
+        if serializer.is_valid():
+            email = serializer.validated_data['email']
+
+            try:
+                # Check if user exists and is already verified
+                user = User.objects.filter(email=email, role='student').first()
+                if user:
+                    from .models import Student
+                    try:
+                        student_record = user.student_profile
+                        if student_record.is_verified:
+                            return Response({
+                                'message': 'This email is already verified. You can log in to your account.'
+                            }, status=status.HTTP_200_OK)
+                    except Student.DoesNotExist:
+                        pass  # Continue with sending OTP
+
+                # Get existing OTP registration data if user doesn't exist
+                registration_data = None
+                if not user:
+                    existing_otp = EmailVerificationOTP.objects.filter(
+                        email=email,
+                        is_used=False
+                    ).order_by('-created_at').first()
+                    if existing_otp:
+                        registration_data = existing_otp.registration_data
+
+                # Generate new OTP
+                otp_code = f"{random.randint(100000, 999999)}"
+                expires_at = timezone.now() + timezone.timedelta(minutes=30)
+
+                # Mark previous OTPs as used
+                EmailVerificationOTP.objects.filter(
+                    email=email,
+                    is_used=False
+                ).update(is_used=True)
+
+                # Create new OTP record
+                EmailVerificationOTP.objects.create(
+                    user=user,
+                    code=otp_code,
+                    email=email,
+                    expires_at=expires_at,
+                    registration_data=registration_data or {}
+                )
+
+                # Send verification email
+                full_name = user.full_name if user else (registration_data.get('full_name') if registration_data else 'Student')
+                send_mail(
+                    'Verify Your Email Address - Yourself Pilates',
+                    (
+                        f'Dear {full_name},\n\n'
+                        f'Here is your new verification code for your student account:\n'
+                        f'\n'
+                        f'OTP: {otp_code}\n'
+                        f'\n'
+                        f'This OTP is valid for 30 minutes.\n'
+                        f'\n'
+                        f'If you did not request this code, please ignore this email or contact support.\n\n'
+                        f'Best regards,\nYourself Pilates Team'
+                    ),
+                    settings.DEFAULT_FROM_EMAIL,
+                    [email],
+                    fail_silently=False,
+                )
+
+                return Response({
+                    "message": "New verification code sent to your email address.",
+                    "email": email
+                }, status=status.HTTP_200_OK)
+
+            except Exception as e:
+                return Response({
+                    'error': 'Failed to send verification email. Please try again later.',
+                    'details': str(e)
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
