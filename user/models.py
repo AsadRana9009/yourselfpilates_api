@@ -113,12 +113,34 @@ class PasswordResetOTP(models.Model):
         return f"OTP for {self.user.email}: {self.code} (expires {self.expires_at})"
 
 
+class EmailVerificationOTP(models.Model):
+    """Model for storing email verification OTP codes for student registration"""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='email_verification_otps', null=True, blank=True)
+    code = models.CharField(max_length=6)  # 6 digit OTP
+    email = models.EmailField(help_text="Email address being verified")
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    # Store registration data temporarily
+    registration_data = models.JSONField(default=dict, help_text="Store registration data until verification")
+
+    def is_expired(self):
+        """Check if OTP has expired"""
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    def __str__(self):
+        return f"Email verification OTP for {self.email}: {self.code} (expires {self.expires_at})"
+
+
 class Student(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student_profile', null=True, blank=True)
     full_name = models.CharField(max_length=255)
     email = models.EmailField()
     contact_number = models.CharField(max_length=20, blank=True, null=True)
     is_public = models.BooleanField(default=False, help_text='True when the student registered themselves')
+    is_verified = models.BooleanField(default=False, null=True, blank=True, help_text='True if student email has been verified')
     professor = models.ForeignKey(
         User,
         on_delete=models.CASCADE,

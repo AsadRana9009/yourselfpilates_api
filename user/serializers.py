@@ -1,7 +1,7 @@
 """
 Serializers for the user API view.
 """
-from .models import User
+from .models import User, EmailVerificationOTP
 from bookings.models import Booking
 from bookings.serializers import BookingSerializer
 from django.contrib.auth import (
@@ -10,12 +10,158 @@ from django.contrib.auth import (
 )
 from rest_framework import serializers
 from .models import Student
+import re
+
+
+class StudentRegistrationSerializer(serializers.ModelSerializer):
+    """Serializer for student registration with JWT authentication"""
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'},
+        min_length=8
+    )
+    confirm_password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'}
+    )
+
+    class Meta:
+        model = get_user_model()
+        fields = [
+            'email',
+            'password',
+            'confirm_password',
+            'full_name',
+            'contact_number'
+        ]
+        extra_kwargs = {
+            'email': {'required': True},
+            'full_name': {'required': True},
+            'contact_number': {'required': True}
+        }
+
+    def validate_email(self, value):
+        """Validate email format and check if already exists"""
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
+            raise serializers.ValidationError("Invalid email format.")
+
+        # Normalize email to lowercase
+        email = value.lower()
+
+        # Check if verified user already exists
+        existing_user = get_user_model().objects.filter(email=email).first()
+        if existing_user:
+            # Check if user has verified their email
+            from .models import Student
+            try:
+                student_profile = existing_user.student_profile
+                if student_profile.is_verified:
+                    raise serializers.ValidationError("A verified user with this email already exists.")
+                else:
+                    # Delete unverified user to allow re-registration
+                    existing_user.delete()
+            except Student.DoesNotExist:
+                # User exists but no student profile - delete and allow re-registration
+                existing_user.delete()
+
+        # Check if there's a pending OTP for this email (user trying to register again before verification)
+        pending_otp = EmailVerificationOTP.objects.filter(
+            email=email,
+            is_used=False
+        ).first()
+        if pending_otp and not pending_otp.is_expired():
+            raise serializers.ValidationError("A verification code was already sent to this email. Please verify or wait for it to expire.")
+
+        return email
+
+    def validate_contact_number(self, value):
+        """Validate contact number format"""
+        if not value:
+            raise serializers.ValidationError("Contact number is required.")
+
+        # Remove any spaces or special characters for validation (keep +)
+        clean_number = re.sub(r'[^\d+]', '', value)
+
+        # Basic validation for international phone number (starts with + and has 8-15 digits)
+        if not re.match(r'^\+\d{8,15}$', clean_number):
+            raise serializers.ValidationError(
+                "Invalid phone number format. Use international format: +[country_code][number] (e.g., +351912345678)"
+            )
+
+        return value
+
+    def validate(self, attrs):
+        """Validate password match and strength"""
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({
+                "password": "Passwords do not match."
+            })
+
+        # Validate password strength with comprehensive requirements
+        password = attrs.get('password')
+
+        # Check minimum length
+        if len(password) < 8:
+            raise serializers.ValidationError({
+                "password": "Password must be at least 8 characters long."
+            })
+
+        # Check for uppercase letter
+        if not re.search(r'[A-Z]', password):
+            raise serializers.ValidationError({
+                "password": "Password must contain at least one uppercase letter (A-Z)."
+            })
+
+        # Check for lowercase letter
+        if not re.search(r'[a-z]', password):
+            raise serializers.ValidationError({
+                "password": "Password must contain at least one lowercase letter (a-z)."
+            })
+
+        # Check for digit
+        if not re.search(r'\d', password):
+            raise serializers.ValidationError({
+                "password": "Password must contain at least one digit (0-9)."
+            })
+
+        # Check for special character (optional but recommended)
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+            raise serializers.ValidationError({
+                "password": "Password must contain at least one special character (!@#$%^&*(),.?\":{}|<>)."
+            })
+
+        # Check for common passwords (basic list)
+        common_passwords = ['password123', 'admin123', '12345678', 'abcd1234', 'password', '123456789']
+        if password.lower() in common_passwords:
+            raise serializers.ValidationError({
+                "password": "This password is too common. Please choose a stronger password."
+            })
+
+        return attrs
+
+    def create(self, validated_data):
+        """Create and return a new student user"""
+        # Remove confirm_password from validated_data
+        validated_data.pop('confirm_password', None)
+
+        # Set default values for student
+        validated_data['role'] = 'student'
+        validated_data['is_active'] = True
+        validated_data['is_student'] = True
+        validated_data['is_public'] = True  # Self-registered student
+
+        # Create user with hashed password
+        user = get_user_model().objects.create_user(**validated_data)
+
+        return user
 
 
 class StudentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Student
-        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'joined_at', 'professor']
+        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'is_verified', 'joined_at', 'professor']
         read_only_fields = ['id', 'is_public', 'joined_at']
         extra_kwargs = {
             'professor': {'required': False, 'allow_null': True}
@@ -32,21 +178,83 @@ class BookingSummarySerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     subscribed_pack_details = serializers.SerializerMethodField()
     booking_details = serializers.SerializerMethodField()
-
+    confirm_password = serializers.CharField(
+        write_only=True,
+        required=False,
+        style={'input_type': 'password'}
+    )
 
     class Meta:
         model = get_user_model()
         fields = [
             'email', 'password', 'full_name', 'role', 'bio',
             'contact_number', 'photo', 'city', 'remaining_hours', 'used_hours',
-            'total_purchased_hours',
+            'total_purchased_hours', 'confirm_password',
             'subscribed_pack_details', 'booking_details'
         ]
         extra_kwargs = {
-            'password': {'write_only': True, 'min_length': 5},
+            'password': {'write_only': True, 'min_length': 8},
             'remaining_hours': {'read_only': True},
             'used_hours': {'read_only': True},
         }
+
+    def validate_email(self, value):
+        """Validate email format"""
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
+            raise serializers.ValidationError("Invalid email format.")
+        return value.lower()
+
+    def validate_contact_number(self, value):
+        """Validate contact number format"""
+        if not value:
+            return value  # Contact number is optional in UserSerializer
+
+        # Remove any spaces or special characters for validation (keep +)
+        clean_number = re.sub(r'[^\d+]', '', value)
+
+        # Basic validation for international phone number (starts with + and has 8-15 digits)
+        if not re.match(r'^\+\d{8,15}$', clean_number):
+            raise serializers.ValidationError(
+                "Invalid phone number format. Use international format: +[country_code][number] (e.g., +351912345678)"
+            )
+
+        return value
+
+    def validate(self, attrs):
+        """Validate password confirmation if provided"""
+        if 'confirm_password' in attrs:
+            if attrs.get('password') != attrs.get('confirm_password'):
+                raise serializers.ValidationError({
+                    "password": "Passwords do not match."
+                })
+            # Remove confirm_password before saving
+            attrs.pop('confirm_password', None)
+
+        # Validate password strength if provided
+        password = attrs.get('password')
+        if password:
+            if len(password) < 8:
+                raise serializers.ValidationError({
+                    "password": "Password must be at least 8 characters long."
+                })
+            if not re.search(r'[A-Z]', password):
+                raise serializers.ValidationError({
+                    "password": "Password must contain at least one uppercase letter (A-Z)."
+                })
+            if not re.search(r'[a-z]', password):
+                raise serializers.ValidationError({
+                    "password": "Password must contain at least one lowercase letter (a-z)."
+                })
+            if not re.search(r'\d', password):
+                raise serializers.ValidationError({
+                    "password": "Password must contain at least one digit (0-9)."
+                })
+            if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+                raise serializers.ValidationError({
+                    "password": "Password must contain at least one special character (!@#$%^&*(),.?\":{}|<>)."
+                })
+
+        return attrs
 
     def get_subscribed_pack_details(self, obj):
         # Get all subscription history for this user
@@ -73,8 +281,28 @@ class UserSerializer(serializers.ModelSerializer):
         user = get_user_model().objects.create_user(**validated_data)
         # Mark as public (self-registered) so the admin can distinguish them
         user.is_public = True
-        user.save(update_fields=['is_public'])
+        # Set default is_verified if not provided
+        if not hasattr(user, 'is_verified') or user.is_verified is None:
+            user.is_verified = False
+        user.save(update_fields=['is_public', 'is_verified'])
         return user
+
+    def to_representation(self, instance):
+        """Enhanced response to include JWT tokens for students"""
+        data = super().to_representation(instance)
+
+        # Add JWT tokens for student users
+        if instance.role == 'student':
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(instance)
+            data['tokens'] = {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+            data['token_type'] = 'Bearer'
+            data['message'] = 'Student registered successfully'
+
+        return data
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
@@ -146,9 +374,37 @@ class UserAdminSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'date_joined', 'bio', 'used_hours', 'is_public']
         extra_kwargs = {
-            'password': {'write_only': True, 'min_length': 5},
+            'password': {'write_only': True, 'min_length': 8},
             'is_active': {'read_only': True},
         }
+
+    def validate_email(self, value):
+        """Validate email format"""
+        if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
+            raise serializers.ValidationError("Invalid email format.")
+        return value.lower()
+
+    def validate_contact_number(self, value):
+        """Validate contact number format"""
+        if not value:
+            return value  # Contact number is optional
+
+        # Remove any spaces or special characters for validation (keep +)
+        clean_number = re.sub(r'[^\d+]', '', value)
+
+        # Basic validation for international phone number (starts with + and has 8-15 digits)
+        if not re.match(r'^\+\d{8,15}$', clean_number):
+            raise serializers.ValidationError(
+                "Invalid phone number format. Use international format: +[country_code][number] (e.g., +351912345678)"
+            )
+
+        return value
+
+    def validate_password(self, value):
+        """Validate password strength"""
+        if value and len(value) < 8:
+            raise serializers.ValidationError("Password must be at least 8 characters long.")
+        return value
 
     def get_subscribed_pack_details(self, obj):
         # Get all subscription history for this user
@@ -238,3 +494,78 @@ class ResetPasswordWithOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(max_length=6)
     new_password = serializers.CharField(min_length=8)
+
+
+class StudentLoginSerializer(serializers.Serializer):
+    """Serializer for student login with JWT"""
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(
+        required=True,
+        write_only=True,
+        style={'input_type': 'password'}
+    )
+
+    def validate_email(self, value):
+        """Normalize email to lowercase"""
+        return value.lower()
+
+    def validate(self, attrs):
+        """Validate credentials and return user"""
+        email = attrs.get('email')
+        password = attrs.get('password')
+
+        if email and password:
+            user = authenticate(
+                request=self.context.get('request'),
+                username=email,
+                password=password
+            )
+
+            if not user:
+                raise serializers.ValidationError(
+                    "Invalid email or password.",
+                    code='authorization'
+                )
+
+            if not user.is_active:
+                raise serializers.ValidationError(
+                    "This user account has been disabled.",
+                    code='authorization'
+                )
+
+            if user.role != 'student':
+                raise serializers.ValidationError(
+                    "This endpoint is for students only.",
+                    code='authorization'
+                )
+
+            attrs['user'] = user
+            return attrs
+
+        raise serializers.ValidationError(
+            "Both email and password are required.",
+            code='required'
+        )
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    """Serializer for email verification with OTP"""
+    email = serializers.EmailField(required=True)
+    otp = serializers.CharField(required=True, max_length=6, min_length=6)
+
+    def validate_email(self, value):
+        """Normalize email to lowercase"""
+        return value.lower()
+
+
+class ResendVerificationOTPSerializer(serializers.Serializer):
+    """Serializer for resending verification OTP"""
+    email = serializers.EmailField(required=True)
+
+    def validate_email(self, value):
+        """Normalize email to lowercase and check if registration exists"""
+        email = value.lower()
+        # Check if there's a pending registration or existing user
+        if not EmailVerificationOTP.objects.filter(email=email).exists() and not get_user_model().objects.filter(email=email, role='student').exists():
+            raise serializers.ValidationError("No registration found with this email address.")
+        return email
