@@ -13,7 +13,8 @@ from .views import (
     StudentRegistrationView,
     StudentLoginView,
     VerifyGmailEmailView,
-    ResendVerificationOTPView
+    ResendVerificationOTPView,
+    ProfessorsListView,
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
@@ -45,6 +46,9 @@ urlpatterns = [
     path('verify-reset-otp/', VerifyPasswordResetOTPView.as_view(), name='verify-reset-otp'),
     path('confirm-reset-otp/', ConfirmPasswordResetOTPView.as_view(), name='confirm-reset-otp'),
     path('reset-password-with-otp/', ResetPasswordWithOTPView.as_view(), name='reset-password-with-otp'),
+
+    # Public professors list (for booking)
+    path('professors/', ProfessorsListView.as_view(), name='professors-list'),
 
     # Router URLs at the end
     path('', include(router.urls)),

@@ -35,20 +35,22 @@ class BookingSerializer(serializers.ModelSerializer):
 
     professor_details = UserDataSerializer(source='professor', read_only=True)
     student_details = StudentDataSerializer(source='students', many=True, read_only=True)
+    region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
 
     class Meta:
         model = Booking
         fields = [
             'id', 'title', 'booking_type', 'professor', 'booking_date', 'time_slot', 'approve',
             'status', 'total_students', 'notes', 'students', 'created_at', 'updated_at',
-            'professor_details', 'student_details'
+            'professor_details', 'student_details', 'region', 'region_name'
         ]
         extra_kwargs = {
             'status': {'required': False},
             'created_at': {'read_only': True},
             'updated_at': {'read_only': True},
             'total_students': {'read_only': True},
-            'approve': {'required': False}
+            'approve': {'required': False},
+            'region': {'required': False, 'allow_null': True},
         }
 
     def validate(self, data):
@@ -108,7 +110,7 @@ class BookingSerializer(serializers.ModelSerializer):
         return booking
 
     def update(self, instance, validated_data):
-        for attr in ['title', 'booking_type', 'professor', 'booking_date', 'time_slot', 'approve', 'status', 'notes']:
+        for attr in ['title', 'booking_type', 'professor', 'booking_date', 'time_slot', 'approve', 'status', 'notes', 'region']:
             if attr in validated_data:
                 setattr(instance, attr, validated_data[attr])
         instance.save()

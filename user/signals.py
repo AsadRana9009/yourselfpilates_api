@@ -95,24 +95,30 @@ def create_teacher_student_visit(sender, instance, created, **kwargs):
 # When a Student record is created/updated, ensure the linked User is marked as student
 @receiver(post_save, sender=StudentModel)
 def mark_user_as_student_on_student_create(sender, instance, created, **kwargs):
-    user = getattr(instance, 'user', None)
-    if user:
-        # set role to student if not already
-        changed = False
-        if user.role != 'student':
-            user.role = 'student'
-            changed = True
-        if not user.is_student:
-            # use update to avoid recursive signals
-            User.objects.filter(pk=user.pk).update(is_student=True, role='student')
-        elif changed:
-            user.save(update_fields=['role'])
+    user_pk = instance.user_id
+    if not user_pk:
+        return
+    try:
+        user = User.objects.get(pk=user_pk)
+    except User.DoesNotExist:
+        return
+    # set role to student if not already
+    changed = False
+    if user.role != 'student':
+        user.role = 'student'
+        changed = True
+    if not user.is_student:
+        # use update to avoid recursive signals
+        User.objects.filter(pk=user.pk).update(is_student=True, role='student')
+    elif changed:
+        user.save(update_fields=['role'])
 
 
 # When a Student is deleted, clear the flag on the linked User
 @receiver(post_delete, sender=StudentModel)
 def unmark_user_as_student_on_student_delete(sender, instance, **kwargs):
-    user = getattr(instance, 'user', None)
-    if user:
-        # If the user has no remaining Student profile, mark as not student
-        User.objects.filter(pk=user.pk).update(is_student=False)
+    # Use user_id (raw FK column) to avoid a DB lookup that would raise
+    # User.DoesNotExist when the Student was cascade-deleted alongside its User.
+    user_pk = instance.user_id
+    if user_pk:
+        User.objects.filter(pk=user_pk).update(is_student=False)

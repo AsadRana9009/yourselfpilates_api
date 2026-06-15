@@ -34,12 +34,14 @@ class StudentRegistrationSerializer(serializers.ModelSerializer):
             'password',
             'confirm_password',
             'full_name',
-            'contact_number'
+            'contact_number',
+            'region',
         ]
         extra_kwargs = {
             'email': {'required': True},
             'full_name': {'required': True},
-            'contact_number': {'required': True}
+            'contact_number': {'required': True},
+            'region': {'required': False, 'allow_null': True},
         }
 
     def validate_email(self, value):
@@ -159,12 +161,15 @@ class StudentRegistrationSerializer(serializers.ModelSerializer):
 
 
 class StudentSerializer(serializers.ModelSerializer):
+    region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
+
     class Meta:
         model = Student
-        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'is_verified', 'joined_at', 'professor']
-        read_only_fields = ['id', 'is_public', 'joined_at']
+        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'is_verified', 'joined_at', 'professor', 'region', 'region_name']
+        read_only_fields = ['id', 'is_public', 'joined_at', 'region_name']
         extra_kwargs = {
-            'professor': {'required': False, 'allow_null': True}
+            'professor': {'required': False, 'allow_null': True},
+            'region': {'required': False, 'allow_null': True},
         }
 
 
@@ -178,6 +183,7 @@ class BookingSummarySerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     subscribed_pack_details = serializers.SerializerMethodField()
     booking_details = serializers.SerializerMethodField()
+    region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
     confirm_password = serializers.CharField(
         write_only=True,
         required=False,
@@ -189,13 +195,14 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'email', 'password', 'full_name', 'role', 'bio',
             'contact_number', 'photo', 'city', 'remaining_hours', 'used_hours',
-            'total_purchased_hours', 'confirm_password',
+            'total_purchased_hours', 'confirm_password', 'region', 'region_name',
             'subscribed_pack_details', 'booking_details'
         ]
         extra_kwargs = {
             'password': {'write_only': True, 'min_length': 8},
             'remaining_hours': {'read_only': True},
             'used_hours': {'read_only': True},
+            'region': {'required': False, 'allow_null': True},
         }
 
     def validate_email(self, value):
@@ -279,8 +286,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = get_user_model().objects.create_user(**validated_data)
-        # Mark as public (self-registered) so the admin can distinguish them
-        user.is_public = True
+        # Pro professor: self-registered, so is_public=False
+        user.is_public = False
         # Set default is_verified if not provided
         if not hasattr(user, 'is_verified') or user.is_verified is None:
             user.is_verified = False
@@ -361,6 +368,7 @@ class UserAdminSerializer(serializers.ModelSerializer):
     )
     subscribed_pack_details = serializers.SerializerMethodField()
     booking_details = serializers.SerializerMethodField()
+    region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
 
 
     class Meta:
@@ -369,13 +377,14 @@ class UserAdminSerializer(serializers.ModelSerializer):
             'id', 'email', 'password', 'full_name', 'role', 'bio', 'date_joined',
             'contact_number', 'photo', 'is_active', 'is_public', 'street', 'city', 'state', 'country',
             'zipcode', 'students', 'student_ids', 'remaining_hours', 'used_hours',
-            'total_purchased_hours',
+            'total_purchased_hours', 'region', 'region_name',
             'subscribed_pack_details', 'booking_details'
         ]
-        read_only_fields = ['id', 'date_joined', 'bio', 'used_hours', 'is_public']
+        read_only_fields = ['id', 'date_joined', 'bio', 'used_hours', 'is_public', 'region_name']
         extra_kwargs = {
             'password': {'write_only': True, 'min_length': 8},
             'is_active': {'read_only': True},
+            'region': {'required': False, 'allow_null': True},
         }
 
     def validate_email(self, value):
@@ -453,6 +462,9 @@ class UserAdminSerializer(serializers.ModelSerializer):
                     fail_silently=False,
                 )
             user.set_password(password)
+        # Public professor: added by admin, so is_public=True
+        if user.role == 'professor':
+            user.is_public = True
         user.save()
         if user.role == 'professor':
             for student in student_ids:

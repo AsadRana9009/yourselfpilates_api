@@ -42,6 +42,7 @@ class BookingViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         'booking_date': ['exact'],
         'booking_type': ['exact'],
+        'region': ['exact'],
     }
     permission_classes = [permissions.IsAuthenticated]
 
@@ -114,6 +115,80 @@ class BookingViewSet(viewsets.ModelViewSet):
         ]
 
         return Response(available)
+
+    @action(detail=False, methods=['post'])
+    def student_book(self, request):
+        """Allow authenticated students to create a booking with a selected professor."""
+        from user.models import User as UserModel, Student
+        user = request.user
+
+        professor_id = request.data.get('professor')
+        booking_date = request.data.get('booking_date')
+        time_slot = request.data.get('time_slot')
+        notes = request.data.get('notes', '')
+        title = request.data.get('title', '')
+        region_id = request.data.get('region')
+
+        if not all([professor_id, booking_date, time_slot]):
+            return Response(
+                {"error": "professor, booking_date, and time_slot are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            professor = UserModel.objects.get(id=professor_id, role__in=['professor', 'teacher'])
+        except UserModel.DoesNotExist:
+            return Response({"error": "Professor not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            bd = datetime.strptime(booking_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if bd < timezone.now().date():
+            return Response({"error": "Booking date must be in the future"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Booking.objects.filter(booking_date=booking_date, time_slot=time_slot).exclude(status='cancelled').exists():
+            return Response({"error": "This time slot is already booked"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if professor.remaining_hours < 1:
+            return Response(
+                {"error": "The selected professor does not have sufficient hours available"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from subscriptions.models import Region
+        region = None
+        if region_id:
+            try:
+                region = Region.objects.get(id=region_id)
+            except Region.DoesNotExist:
+                pass
+
+        booking = Booking.objects.create(
+            professor=professor,
+            booking_date=booking_date,
+            time_slot=time_slot,
+            notes=notes,
+            title=title or f"Booking by {user.full_name}",
+            booking_type='public',
+            region=region,
+        )
+
+        try:
+            student_profile = user.student_profile
+            booking.students.add(student_profile)
+            booking.total_students = booking.students.count()
+            booking.save(update_fields=['total_students'])
+        except Exception:
+            pass
+
+        professor.remaining_hours = professor.remaining_hours - Decimal('1')
+        professor.used_hours = (professor.used_hours or 0) + 1
+        professor.save(update_fields=['remaining_hours', 'used_hours'])
+
+        serializer = self.get_serializer(booking)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def perform_create(self, serializer):
         if not self.request.user.role == 'admin':

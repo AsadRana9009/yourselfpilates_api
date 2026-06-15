@@ -69,6 +69,14 @@ class Booking(models.Model):
     notes = models.TextField(blank=True, null=True)
     igloo_pin = models.CharField(max_length=10, blank=True, null=True, help_text='Igloo PIN code for this booking')
     igloo_job_id = models.CharField(max_length=100, blank=True, null=True, help_text='Igloo Job ID for this booking')
+    region = models.ForeignKey(
+        'subscriptions.Region',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='bookings',
+        help_text="Gym region/location for this booking",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -88,4 +96,4 @@ class Booking(models.Model):
             raise ValidationError("This time slot is already booked")
 
     def __str__(self):
-        return f"{self.booking_date} {self.get_time_slot_display()} - {self.professor.get_full_name()}"
+        return f"{self.booking_date} {self.get_time_slot_display()} - {self.professor.full_name}"

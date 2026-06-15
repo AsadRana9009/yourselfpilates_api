@@ -58,7 +58,8 @@ class StudentRegistrationView(APIView):
                 'role': 'student',
                 'is_student': True,
                 'is_public': True,
-                'is_active': True
+                'is_active': True,
+                'region_id': request.data.get('region'),
             }
 
             try:
@@ -233,6 +234,9 @@ class UserAdminViewSet(viewsets.ModelViewSet):
         is_public = self.request.query_params.get('is_public')
         if is_public is not None:
             queryset = queryset.filter(is_public=is_public.lower() == 'true')
+        region = self.request.query_params.get('region')
+        if region is not None:
+            queryset = queryset.filter(region=region)
         return queryset.order_by('-date_joined')
 
     @extend_schema(
@@ -423,6 +427,10 @@ class StudentViewSet(viewsets.ModelViewSet):
         is_public = self.request.query_params.get('is_public')
         if is_public is not None:
             queryset = queryset.filter(is_public=is_public.lower() == 'true')
+
+        region = self.request.query_params.get('region')
+        if region is not None:
+            queryset = queryset.filter(region=region)
 
         return queryset.order_by('-id')
 
@@ -736,6 +744,16 @@ class VerifyGmailEmailView(APIView):
                     otp_obj.user = user
                     otp_obj.save()
 
+                    # Resolve region from registration_data if provided
+                    from subscriptions.models import Region as RegionModel
+                    region_id = registration_data.get('region_id')
+                    region_obj = None
+                    if region_id:
+                        try:
+                            region_obj = RegionModel.objects.get(id=region_id)
+                        except RegionModel.DoesNotExist:
+                            pass
+
                     # Create or update student record with verified status
                     from .models import Student
                     student_record, created = Student.objects.get_or_create(
@@ -745,7 +763,8 @@ class VerifyGmailEmailView(APIView):
                             'email': user.email,
                             'contact_number': user.contact_number,
                             'is_public': True,
-                            'is_verified': True
+                            'is_verified': True,
+                            'region': region_obj,
                         }
                     )
                     if not created:
@@ -755,6 +774,8 @@ class VerifyGmailEmailView(APIView):
                         student_record.email = user.email
                         student_record.contact_number = user.contact_number
                         student_record.is_public = True
+                        if region_obj:
+                            student_record.region = region_obj
                         student_record.save()
 
                     # Generate JWT tokens for the verified student
@@ -877,5 +898,18 @@ class ResendVerificationOTPView(APIView):
                     'error': 'Failed to send verification email. Please try again later.',
                     'details': str(e)
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProfessorsListView(APIView):
+    """Return a list of active professors/teachers for booking selection."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        qs = User.objects.filter(role__in=['professor', 'teacher'], is_active=True)
+        region = request.query_params.get('region')
+        if region:
+            qs = qs.filter(region=region)
+        professors = qs.values('id', 'full_name', 'email').order_by('full_name')
+        return Response(list(professors))
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

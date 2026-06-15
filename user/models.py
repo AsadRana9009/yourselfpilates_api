@@ -50,8 +50,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(max_length=20, default='professor')
     
     is_student = models.BooleanField(default=False)
-    is_public = models.BooleanField(default=False, help_text="True for professors who self-registered; False for admin-created.")
+    is_public = models.BooleanField(default=False, help_text="True for public-tier professors (added by admin); False for pro-tier professors (self-registered).")
     photo = models.ImageField(upload_to='profile_photos/', blank=True, null=True)
+    region = models.ForeignKey(
+        'subscriptions.Region',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='users',
+        help_text="Gym region/location this user belongs to",
+    )
 
     street = models.CharField(max_length=200, null=True, blank=True)
     city = models.CharField(max_length=200, null=True, blank=True)
@@ -141,9 +149,17 @@ class Student(models.Model):
     contact_number = models.CharField(max_length=20, blank=True, null=True)
     is_public = models.BooleanField(default=False, help_text='True when the student registered themselves')
     is_verified = models.BooleanField(default=False, null=True, blank=True, help_text='True if student email has been verified')
+    region = models.ForeignKey(
+        'subscriptions.Region',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='students',
+        help_text="Gym region/location this student belongs to",
+    )
     professor = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         limit_choices_to={'role': 'professor'},
         related_name='students',
         null=True,
