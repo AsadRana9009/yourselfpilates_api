@@ -196,7 +196,7 @@ class UserSerializer(serializers.ModelSerializer):
             'email', 'password', 'full_name', 'role', 'bio',
             'contact_number', 'photo', 'city', 'remaining_hours', 'used_hours',
             'total_purchased_hours', 'confirm_password', 'region', 'region_name',
-            'subscribed_pack_details', 'booking_details'
+            'subscribed_pack_details', 'booking_details', 'is_verified'
         ]
         extra_kwargs = {
             'password': {'write_only': True, 'min_length': 8},
@@ -375,12 +375,12 @@ class UserAdminSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'email', 'password', 'full_name', 'role', 'bio', 'date_joined',
-            'contact_number', 'photo', 'is_active', 'is_public', 'street', 'city', 'state', 'country',
+            'contact_number', 'photo', 'is_active', 'is_public', 'is_verified', 'street', 'city', 'state', 'country',
             'zipcode', 'students', 'student_ids', 'remaining_hours', 'used_hours',
             'total_purchased_hours', 'region', 'region_name',
             'subscribed_pack_details', 'booking_details'
         ]
-        read_only_fields = ['id', 'date_joined', 'bio', 'used_hours', 'is_public', 'region_name']
+        read_only_fields = ['id', 'date_joined', 'bio', 'used_hours', 'is_public', 'is_verified', 'region_name']
         extra_kwargs = {
             'password': {'write_only': True, 'min_length': 8},
             'is_active': {'read_only': True},
