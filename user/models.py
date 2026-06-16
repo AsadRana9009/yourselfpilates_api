@@ -51,6 +51,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     is_student = models.BooleanField(default=False)
     is_public = models.BooleanField(default=False, help_text="True for public-tier professors (added by admin); False for pro-tier professors (self-registered).")
+    is_verified = models.BooleanField(default=False, help_text="True if user email has been verified")
     photo = models.ImageField(upload_to='profile_photos/', blank=True, null=True)
     region = models.ForeignKey(
         'subscriptions.Region',
