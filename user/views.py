@@ -42,6 +42,7 @@ class StudentRegistrationView(APIView):
     """
     Student registration endpoint with JWT authentication.
     POST /api/user/student/register/
+    No email verification required — account is created and verified immediately.
     """
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -49,7 +50,7 @@ class StudentRegistrationView(APIView):
     @extend_schema(
         request=StudentRegistrationSerializer,
         responses={201: StudentRegistrationSerializer},
-        description="Register a new student with email address, password, full name, and contact number. Requires email verification."
+        description="Register a new student. Account is created and verified immediately — no email OTP step required."
     )
     def post(self, request):
         serializer = StudentRegistrationSerializer(data=request.data)
@@ -57,72 +58,99 @@ class StudentRegistrationView(APIView):
             validated_data = serializer.validated_data
             email = validated_data.get('email').lower()
 
-            # Generate 6-digit OTP for email verification
-            otp_code = f"{random.randint(100000, 999999)}"
-            expires_at = timezone.now() + timezone.timedelta(minutes=30)
-
-            # Store registration data in OTP record (don't create user yet)
-            registration_data = {
-                'email': email,
-                'password': validated_data.get('password'),
-                'full_name': validated_data.get('full_name'),
-                'contact_number': validated_data.get('contact_number'),
-                'role': 'student',
-                'is_student': True,
-                'is_public': True,
-                'is_active': True,
-                'region_id': request.data.get('region'),
-            }
-
             try:
-                # Clean up any existing unused OTPs for this email
-                EmailVerificationOTP.objects.filter(
-                    email=email,
-                    is_used=False
-                ).delete()
+                from django.db import transaction
+                from subscriptions.models import Region as RegionModel
 
-                # Create EmailVerificationOTP record (no user created yet)
-                EmailVerificationOTP.objects.create(
-                    code=otp_code,
-                    email=email,
-                    expires_at=expires_at,
-                    registration_data=registration_data
-                )
-
-                # Send email in a background thread so the response is instant
-                full_name = validated_data.get('full_name')
-                def _send():
+                region_id = request.data.get('region')
+                region_obj = None
+                if region_id:
                     try:
-                        send_mail(
-                            'Verify Your Email Address - Yourself Pilates',
-                            (
-                                f'Dear {full_name},\n\n'
-                                f'Thank you for registering as a student on Yourself Pilates!\n'
-                                f'\n'
-                                f'Please use the following One-Time Password (OTP) to verify your email address:\n'
-                                f'\n'
-                                f'OTP: {otp_code}\n'
-                                f'\n'
-                                f'This OTP is valid for 30 minutes. After verification, you can log in to your account.\n'
-                                f'\n'
-                                f'If you did not register for an account, please ignore this email or contact support.\n\n'
-                                f'Best regards,\nYourself Pilates Team'
-                            ),
-                            settings.DEFAULT_FROM_EMAIL,
-                            [email],
-                            fail_silently=True,
-                        )
-                    except Exception:
+                        region_obj = RegionModel.objects.get(id=region_id)
+                    except RegionModel.DoesNotExist:
                         pass
 
-                threading.Thread(target=_send, daemon=True).start()
+                with transaction.atomic():
+                    user = get_user_model().objects.create_user(
+                        email=email,
+                        password=validated_data.get('password'),
+                        full_name=validated_data.get('full_name'),
+                        contact_number=validated_data.get('contact_number'),
+                        role='student',
+                        is_student=True,
+                        is_public=True,
+                        is_active=True,
+                        region=region_obj,
+                    )
 
-                return Response({
-                    "message": "Student registered successfully. Please check your email for the verification code.",
-                    "email": email,
-                    "full_name": full_name,
-                    "next_step": "Please verify your email using the OTP sent to your email address."
-                }, status=status.HTTP_201_CREATED)
+                    student_record, created = Student.objects.get_or_create(
+                        user=user,
+                        defaults={
+                            'full_name': user.full_name,
+                            'email': user.email,
+                            'contact_number': user.contact_number,
+                            'is_public': True,
+                            'is_verified': True,
+                            'region': region_obj,
+                        }
+                    )
+                    if not created:
+                        # post_save signal may have auto-created the Student without region; patch now
+                        update_fields = []
+                        if region_obj and student_record.region_id != region_obj.id:
+                            student_record.region = region_obj
+                            update_fields.append('region')
+                        if not student_record.is_verified:
+                            student_record.is_verified = True
+                            update_fields.append('is_verified')
+                        if update_fields:
+                            student_record.save(update_fields=update_fields)
+
+                    _full_name = user.full_name
+                    _email = user.email
+                    def _send_welcome():
+                        try:
+                            send_mail(
+                                'Your Account Has Been Created',
+                                (
+                                    f'Dear {_full_name},\n\n'
+                                    f'We are pleased to inform you that your account has been successfully created on Yourself Pilates.\n'
+                                    f'\n'
+                                    f'You may now log in using the following credentials:\n'
+                                    f'Email: {_email}\n'
+                                    f'\n'
+                                    f'If you have any questions or require assistance, please contact our support team.\n\n'
+                                    f'Best regards,\nYourself Pilates Team'
+                                ),
+                                settings.DEFAULT_FROM_EMAIL,
+                                [_email],
+                                fail_silently=True,
+                            )
+                        except Exception:
+                            pass
+                    threading.Thread(target=_send_welcome, daemon=True).start()
+
+                    from rest_framework_simplejwt.tokens import RefreshToken
+                    refresh = RefreshToken.for_user(user)
+
+                    return Response({
+                        "message": "Student registered successfully.",
+                        "user": {
+                            "id": user.id,
+                            "email": user.email,
+                            "full_name": user.full_name,
+                            "role": user.role,
+                            "display_role": get_display_role(user),
+                            "is_public": user.is_public,
+                            "is_verified": True,
+                            "region_id": user.region_id,
+                        },
+                        "tokens": {
+                            "refresh": str(refresh),
+                            "access": str(refresh.access_token),
+                        },
+                        "token_type": "Bearer"
+                    }, status=status.HTTP_201_CREATED)
 
             except Exception as e:
                 return Response({

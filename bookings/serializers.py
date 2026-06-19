@@ -5,7 +5,6 @@ from user.models import User, Student
 from django.core.mail import send_mail
 from django.conf import settings
 from django.template.loader import render_to_string
-from decimal import Decimal
 import threading
 import logging
 
@@ -294,15 +293,6 @@ class BookingSerializer(serializers.ModelSerializer):
         # persist accurate total_students after m2m set
         booking.total_students = booking.students.count()
         booking.save()
-
-        # Deduct 1 hour from professor's remaining_hours — skip for admin-created bookings
-        requesting_user = self.context['request'].user
-        if (
-            booking.professor.role in ['professor', 'teacher']
-            and getattr(requesting_user, 'role', None) != 'admin'
-        ):
-            booking.professor.remaining_hours = booking.professor.remaining_hours - Decimal('1')
-            booking.professor.save()
 
         created_by_role = self.context['request'].user.role
         send_booking_notifications(booking, 'created', created_by_role)

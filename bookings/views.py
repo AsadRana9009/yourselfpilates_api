@@ -14,7 +14,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from .models import Booking, TIME_SLOTS
 from .serializers import BookingSerializer, send_booking_notifications, send_booking_notifications_async
 
-from django.db.models import Case, When, Value, IntegerField
+from django.db.models import Case, When, Value, IntegerField, Q
 from .igloo_utils import delete_igloo_pin_for_booking
 from django.utils import timezone
 from decimal import Decimal
@@ -62,6 +62,8 @@ class BookingViewSet(viewsets.ModelViewSet):
             return base_qs
         if user.role in ['professor', 'teacher']:
             return base_qs.filter(professor=user)
+        if user.role == 'student':
+            return base_qs.filter(students__user=user)
         return Booking.objects.none()
 
     def create(self, request, *args, **kwargs):
@@ -263,20 +265,21 @@ class BookingViewSet(viewsets.ModelViewSet):
         if Booking.objects.filter(booking_date=bd, time_slot=time_slot).exclude(status='cancelled').exists():
             return Response({"error": "This time slot is already booked"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check student's available credits for this region via CreditWallet
-        # (covers both real purchases and free credits added by admins)
-        wallet_remaining = CreditWallet.objects.filter(
+        # Check student's available credits: wallet for this region, or wallet with no
+        # region (admin-granted global credits), or User.remaining_hours as last fallback
+        active_wallet_qs = CreditWallet.objects.filter(
             user=user,
-            region=region,
             status='active',
-        ).aggregate(total=Sum('remaining_hours'))['total'] or 0
+        ).filter(Q(region=region) | Q(region__isnull=True))
+        wallet_remaining = active_wallet_qs.aggregate(total=Sum('remaining_hours'))['total'] or 0
+        effective_remaining = wallet_remaining if wallet_remaining >= 1 else (user.remaining_hours or 0)
 
         try:
             student_profile = user.student_profile
         except Exception:
             student_profile = None
 
-        if wallet_remaining < 1:
+        if effective_remaining < 1:
             return Response(
                 {
                     "error": (
@@ -302,12 +305,8 @@ class BookingViewSet(viewsets.ModelViewSet):
             booking.total_students = booking.students.count()
             booking.save(update_fields=['total_students'])
 
-        # Deduct 1 hour from the student's oldest active CreditWallet entry for this region
-        wallet = CreditWallet.objects.filter(
-            user=user,
-            region=region,
-            status='active',
-        ).order_by('purchase_date').first()
+        # Deduct 1 hour from the oldest active wallet (region-specific first, then global)
+        wallet = active_wallet_qs.order_by('purchase_date').first()
         if wallet:
             wallet.used_hours += 1
             wallet.save()
@@ -339,63 +338,84 @@ class BookingViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['GET'])
     def reject(self, request, pk=None):
-        """Admin-only endpoint to reject a booking"""
+        """Admin/professor endpoint to reject/cancel a booking."""
         return self._change_booking_status(pk, 'cancelled', request)
 
-    
+    @action(detail=True, methods=['POST', 'GET'])
+    def cancel(self, request, pk=None):
+        """Cancel a booking. Accessible by admin, professor (own bookings), or student (own bookings)."""
+        return self._change_booking_status(pk, 'cancelled', request)
+
     def _change_booking_status(self, pk, new_status, request):
 
         booking = self.get_object()
-    
-        # Admin can cancel anything
+
+        # Guard: no-op if already in the target status (prevents double-refund)
+        if booking.status == new_status:
+            return Response(
+                {"detail": f"Booking is already {new_status}."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Permission checks
         if request.user.role == 'admin':
             pass
-        # Professor/Teacher can cancel only *their own* bookings
         elif request.user.role in ['professor', 'teacher']:
             if booking.professor != request.user:
                 return Response(
-                    {"detail": "You can only cancel your own bookings"},
+                    {"detail": "You can only cancel your own bookings."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        elif request.user.role == 'student':
+            # Students may cancel bookings in which they are enrolled
+            if not booking.students.filter(user=request.user).exists():
+                return Response(
+                    {"detail": "You can only cancel your own bookings."},
                     status=status.HTTP_403_FORBIDDEN
                 )
         else:
             return Response(
-                {"detail": "You are not allowed to cancel bookings"},
+                {"detail": "You are not allowed to cancel bookings."},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         if new_status == 'cancelled':
+            from decimal import Decimal
+
             if booking.booking_type == 'pro':
-                from decimal import Decimal
                 student_profile = booking.students.first()
                 student_user = student_profile.user if student_profile else None
-                # If booked by a pro student (student has their own remaining_hours), restore student credits
+                # Booking was made by a pro student — restore student's credits
                 if student_user and student_user.role == 'student' and not student_user.is_public:
                     student_user.remaining_hours = (student_user.remaining_hours or Decimal('0')) + Decimal('1')
                     student_user.used_hours = max(Decimal('0'), (student_user.used_hours or Decimal('0')) - Decimal('1'))
                     student_user.save(update_fields=["remaining_hours", "used_hours"])
-                # If booked by a professor (old flow), restore professor's credit
+                # Booking was made by a professor — restore professor's credits
                 elif booking.professor and booking.professor.role in ['professor', 'teacher']:
-                    booking.professor.remaining_hours = booking.professor.remaining_hours + Decimal('1')
+                    booking.professor.remaining_hours = (booking.professor.remaining_hours or Decimal('0')) + Decimal('1')
                     booking.professor.used_hours = max(Decimal('0'), (booking.professor.used_hours or Decimal('0')) - Decimal('1'))
                     booking.professor.save(update_fields=["remaining_hours", "used_hours"])
 
             # Public bookings: restore the student's CreditWallet credit
-            if booking.booking_type == 'public' and booking.region:
+            elif booking.booking_type == 'public' and booking.region:
                 from subscriptions.models import CreditWallet
                 student_profile = booking.students.first()
                 if student_profile and student_profile.user:
                     student_user = student_profile.user
-                    # Find the wallet entry most recently debited (highest used_hours first)
+                    # Find the wallet entry most recently debited for this region
                     wallet = CreditWallet.objects.filter(
                         user=student_user,
                         region=booking.region,
                     ).exclude(status='cancelled').order_by('-used_hours', 'purchase_date').first()
                     if wallet and wallet.used_hours > 0:
-                        wallet.used_hours = max(0, wallet.used_hours - 1)
+                        wallet.used_hours = max(Decimal('0'), wallet.used_hours - Decimal('1'))
+                        # Reactivate wallet if it was fully consumed
+                        if wallet.status == 'consumed':
+                            wallet.status = 'active'
                         wallet.save()
                     # Mirror restoration on the User record
-                    student_user.used_hours = max(0, (student_user.used_hours or 0) - 1)
-                    student_user.remaining_hours = (student_user.remaining_hours or 0) + 1
+                    student_user.used_hours = max(Decimal('0'), (student_user.used_hours or Decimal('0')) - Decimal('1'))
+                    student_user.remaining_hours = (student_user.remaining_hours or Decimal('0')) + Decimal('1')
                     student_user.save(update_fields=['used_hours', 'remaining_hours'])
 
         # If cancelling, delete the Igloo PIN (if exists)
