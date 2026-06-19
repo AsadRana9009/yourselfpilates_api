@@ -68,14 +68,6 @@ class StudentRegistrationSerializer(serializers.ModelSerializer):
                 # User exists but no student profile - delete and allow re-registration
                 existing_user.delete()
 
-        # Check if there's a pending OTP for this email (user trying to register again before verification)
-        pending_otp = EmailVerificationOTP.objects.filter(
-            email=email,
-            is_used=False
-        ).first()
-        if pending_otp and not pending_otp.is_expired():
-            raise serializers.ValidationError("A verification code was already sent to this email. Please verify or wait for it to expire.")
-
         return email
 
     def validate_contact_number(self, value):
@@ -162,11 +154,23 @@ class StudentRegistrationSerializer(serializers.ModelSerializer):
 
 class StudentSerializer(serializers.ModelSerializer):
     region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
+    purchased_hours = serializers.SerializerMethodField()
+    remaining_hours = serializers.SerializerMethodField()
+    used_hours = serializers.SerializerMethodField()
+
+    def get_purchased_hours(self, obj):
+        return float(obj.user.total_purchased_hours) if obj.user else 0
+
+    def get_remaining_hours(self, obj):
+        return float(obj.user.remaining_hours) if obj.user else 0
+
+    def get_used_hours(self, obj):
+        return float(obj.user.used_hours) if obj.user else 0
 
     class Meta:
         model = Student
-        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'is_verified', 'joined_at', 'professor', 'region', 'region_name']
-        read_only_fields = ['id', 'is_public', 'joined_at', 'region_name']
+        fields = ['id', 'full_name', 'email', 'contact_number', 'is_public', 'is_verified', 'joined_at', 'professor', 'region', 'region_name', 'purchased_hours', 'remaining_hours', 'used_hours']
+        read_only_fields = ['id', 'is_public', 'joined_at', 'region_name', 'purchased_hours', 'remaining_hours', 'used_hours']
         extra_kwargs = {
             'professor': {'required': False, 'allow_null': True},
             'region': {'required': False, 'allow_null': True},
@@ -183,17 +187,37 @@ class BookingSummarySerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     subscribed_pack_details = serializers.SerializerMethodField()
     booking_details = serializers.SerializerMethodField()
-    region_name = serializers.CharField(source='region.name', read_only=True, allow_null=True)
+    region_name = serializers.SerializerMethodField()
+    display_role = serializers.SerializerMethodField()
     confirm_password = serializers.CharField(
         write_only=True,
         required=False,
         style={'input_type': 'password'}
     )
 
+    def get_display_role(self, obj):
+        role = getattr(obj, 'role', '')
+        is_public = getattr(obj, 'is_public', False)
+        if role in ('professor', 'teacher'):
+            return 'Public Professor' if is_public else 'Pro Professor'
+        if role == 'student':
+            return 'Public Student' if is_public else 'Pro Student'
+        return role.capitalize() if role else 'Unknown'
+
+    def get_region_name(self, obj):
+        if obj.region_id:
+            return obj.region.name
+        # For students, region may be set on the linked Student record
+        if obj.role == 'student':
+            student = Student.objects.filter(user=obj).select_related('region').first()
+            if student and student.region_id:
+                return student.region.name
+        return None
+
     class Meta:
         model = get_user_model()
         fields = [
-            'email', 'password', 'full_name', 'role', 'bio',
+            'email', 'password', 'full_name', 'role', 'display_role', 'is_public', 'bio',
             'contact_number', 'photo', 'city', 'remaining_hours', 'used_hours',
             'total_purchased_hours', 'confirm_password', 'region', 'region_name',
             'subscribed_pack_details', 'booking_details', 'is_verified'
@@ -202,6 +226,7 @@ class UserSerializer(serializers.ModelSerializer):
             'password': {'write_only': True, 'min_length': 8},
             'remaining_hours': {'read_only': True},
             'used_hours': {'read_only': True},
+            'is_public': {'read_only': True},
             'region': {'required': False, 'allow_null': True},
         }
 

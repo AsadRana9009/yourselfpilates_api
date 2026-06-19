@@ -2,17 +2,152 @@ from rest_framework.viewsets import ModelViewSet
 from rest_framework import permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings
-from .models import Pack, SubscriptionHistory, Order, Region, PackRegionPrice
+from .models import Pack, SubscriptionHistory, Order, Region, PackRegionPrice, CreditWallet
 from django.template.loader import render_to_string
 from .serializers import PackSerializer, SubscriptionHistorySerializer, OrderSerializer, RegionSerializer
 from .permissions import IsAdminOrReadOnly
 from .ifthenpay_service import IfThenPayService
+from decimal import Decimal
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+from drf_spectacular.utils import extend_schema, OpenApiExample
+from rest_framework import serializers as drf_serializers
+
+
+class FreeCreditsRequestSerializer(drf_serializers.Serializer):
+    user_id = drf_serializers.IntegerField(
+        required=False,
+        help_text="User ID — use this or 'email'"
+    )
+    email = drf_serializers.EmailField(
+        required=False,
+        help_text="User email — use this or 'user_id'"
+    )
+    hours = drf_serializers.IntegerField(
+        required=True,
+        min_value=1,
+        help_text="Number of credit hours to assign (must be ≥ 1)"
+    )
+    region_id = drf_serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Region ID — required for Public Students, optional for Pro users"
+    )
+
+
+class FreeCreditsView(APIView):
+    """Developer tool: assign free credits to any user for testing booking flows."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    @extend_schema(
+        request=FreeCreditsRequestSerializer,
+        description=(
+            "**Developer-only endpoint** — assign free credits to any user to test the booking flow.\n\n"
+            "Works identically to paid credit assignment:\n"
+            "- Updates `User.remaining_hours` and `User.total_purchased_hours`\n"
+            "- Creates a `CreditWallet` entry when `region_id` is supplied "
+            "(required for Public Students — the booking endpoint checks this wallet)\n\n"
+            "**Pro Professor / Pro Student** → `user_id` + `hours`\n\n"
+            "**Public Student** → `user_id` (or `email`) + `hours` + `region_id`"
+        ),
+        examples=[
+            OpenApiExample(
+                'Pro Professor or Pro Student',
+                value={"user_id": 5, "hours": 10},
+                request_only=True,
+            ),
+            OpenApiExample(
+                'Public Student (region required)',
+                value={"email": "student@gmail.com", "hours": 5, "region_id": 2},
+                request_only=True,
+            ),
+        ],
+    )
+    def post(self, request):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+
+        serializer = FreeCreditsRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        data = serializer.validated_data
+
+        user_id = data.get('user_id')
+        email = data.get('email')
+        hours = data['hours']
+        region_id = data.get('region_id')
+
+        if not user_id and not email:
+            return Response({'error': 'Provide user_id or email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(pk=user_id) if user_id else User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        region = None
+        if region_id:
+            try:
+                region = Region.objects.get(pk=region_id, is_active=True)
+            except Region.DoesNotExist:
+                return Response({'error': 'Region not found or inactive.'}, status=status.HTTP_404_NOT_FOUND)
+
+        hours_decimal = Decimal(str(hours))
+
+        user.remaining_hours = (user.remaining_hours or Decimal('0')) + hours_decimal
+        user.total_purchased_hours = (user.total_purchased_hours or Decimal('0')) + hours_decimal
+        user.save(update_fields=['remaining_hours', 'total_purchased_hours'])
+
+        wallet_data = None
+        if region:
+            wallet = CreditWallet.objects.create(
+                user=user,
+                pack=None,
+                order=None,
+                region=region,
+                total_hours=hours_decimal,
+                used_hours=Decimal('0'),
+                purchase_date=timezone.now(),
+                expiry_date=timezone.now() + timezone.timedelta(days=365),
+                status='active',
+            )
+            wallet_data = {
+                'id': wallet.id,
+                'region': region.name,
+                'total_hours': float(wallet.total_hours),
+                'remaining_hours': float(wallet.remaining_hours),
+                'expiry_date': wallet.expiry_date.date().isoformat(),
+            }
+
+        role = getattr(user, 'role', '')
+        is_public = getattr(user, 'is_public', False)
+        if role in ('professor', 'teacher'):
+            display_role = 'Public Professor' if is_public else 'Pro Professor'
+        elif role == 'student':
+            display_role = 'Public Student' if is_public else 'Pro Student'
+        else:
+            display_role = role.capitalize() or 'Unknown'
+
+        return Response({
+            'success': True,
+            'user_id': user.id,
+            'email': user.email,
+            'full_name': user.full_name,
+            'display_role': display_role,
+            'hours_added': hours,
+            'new_remaining_hours': float(user.remaining_hours),
+            'total_purchased_hours': float(user.total_purchased_hours),
+            'region': region.name if region else None,
+            'wallet_entry': wallet_data,
+        }, status=status.HTTP_200_OK)
 
 class PackViewSet(ModelViewSet):
     queryset = Pack.objects.all()
@@ -21,15 +156,21 @@ class PackViewSet(ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_authenticated and getattr(user, "role", None) == "admin":
-            return Pack.objects.all()
 
-        queryset = Pack.objects.filter(active=True)
-        role = getattr(user, 'role', None)
-        if role in ['professor', 'teacher']:
-            return queryset.filter(target_role='professor')
-        if role == 'student':
-            return queryset.filter(target_role='student')
+        # Admins see all packs including inactive ones
+        if user.is_authenticated and getattr(user, "role", None) == "admin":
+            queryset = Pack.objects.all()
+        else:
+            # All other users (authenticated or anonymous) browse active packs freely.
+            # Role/permission checks happen at the subscribe action, not here.
+            queryset = Pack.objects.filter(active=True)
+
+        # Region filter: returns packs for that region + global packs (no region assigned)
+        region_id = self.request.query_params.get('region')
+        if region_id:
+            from django.db.models import Q
+            queryset = queryset.filter(Q(region__id=region_id) | Q(region__isnull=True))
+
         return queryset
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -78,14 +219,31 @@ class PackViewSet(ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Enforce role/pack match for non-admins: professors → professor packs, students → student packs
+        # Enforce role/pack match for non-admins
         if user.role != 'admin':
-            expected_pack_role = 'professor' if user.role in ['professor', 'teacher'] else 'student'
-            if pack.target_role != expected_pack_role:
-                return Response(
-                    {"error": "This pack is not available for your role."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
+            if user.role in ['professor', 'teacher']:
+                # Professors must buy professor packs (any visibility)
+                if pack.target_role != 'professor':
+                    return Response(
+                        {"error": "This pack is not available for your role."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            elif user.role == 'student':
+                is_public_user = getattr(user, 'is_public', False)
+                if is_public_user:
+                    # Public students must buy public packs (any target_role)
+                    if not pack.is_public:
+                        return Response(
+                            {"error": "This pack is not available for your role."},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+                else:
+                    # Pro students must buy pro packs (is_public=False), any target_role
+                    if pack.is_public:
+                        return Response(
+                            {"error": "This pack is not available for your role."},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
 
         # Check if pack is active
         if not pack.active:
@@ -107,14 +265,26 @@ class PackViewSet(ModelViewSet):
         region = None
         price = pack.price
         region_id = request.data.get('region_id')
-        if region_id:
-            try:
-                region = Region.objects.get(pk=region_id, is_active=True)
-                region_price = PackRegionPrice.objects.filter(pack=pack, region=region).first()
-                if region_price:
-                    price = region_price.price
-            except Region.DoesNotExist:
-                return Response({"error": "Region not found or inactive."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user.role in ['professor', 'teacher']:
+            # Professors don't attach a region to their pack purchase
+            region = None
+        else:
+            # Public students MUST specify a region — credits are region-specific
+            # Pro students don't need a region (their bookings use pro professors, not regions)
+            if user.role != 'admin' and getattr(user, 'is_public', False) and not region_id:
+                return Response(
+                    {"error": "Region is required for public student pack purchases."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if region_id:
+                try:
+                    region = Region.objects.get(pk=region_id, is_active=True)
+                    region_price = PackRegionPrice.objects.filter(pack=pack, region=region).first()
+                    if region_price:
+                        price = region_price.price
+                except Region.DoesNotExist:
+                    return Response({"error": "Region not found or inactive."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create order without order_id first
         order = Order.objects.create(
@@ -422,7 +592,17 @@ class OrderViewSet(ModelViewSet):
             return queryset.order_by('-created_at')
 
         return Order.objects.none()
-    
+
+    def perform_destroy(self, instance):
+        # Only deduct hours if the order was actually paid
+        if instance.payment_status == 'Pago':
+            user = instance.user
+            hours = instance.pack.total_hours
+            user.remaining_hours = max(0, (user.remaining_hours or 0) - hours)
+            user.total_purchased_hours = max(0, (user.total_purchased_hours or 0) - hours)
+            user.save(update_fields=['remaining_hours', 'total_purchased_hours'])
+        instance.delete()
+
     def partial_update(self, request, *args, **kwargs):
         """Handle PATCH requests to update payment method for pending orders"""
         order = self.get_object()
@@ -702,6 +882,8 @@ class OrderViewSet(ModelViewSet):
                 hours_added=pack.total_hours,
             )
 
+            create_wallet_entry(user, pack, order)
+
         serializer = self.get_serializer(order)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -872,6 +1054,9 @@ def ifthenpay_callback(request):
             hours_added=order.pack.total_hours
         )
 
+        # Create credit wallet entry
+        create_wallet_entry(user, order.pack, order)
+
         # Send confirmation email
         send_payment_confirmation_email(user, order)
 
@@ -881,6 +1066,22 @@ def ifthenpay_callback(request):
     except Exception as e:
         logger.error(f"Error processing IfThenPay callback: {str(e)}")
         return HttpResponse('Internal server error', status=500)
+
+def create_wallet_entry(user, pack, order):
+    """Create or update a CreditWallet entry when a pack payment is confirmed."""
+    CreditWallet.objects.update_or_create(
+        order=order,
+        defaults={
+            'user': user,
+            'pack': pack,
+            'region': order.region,
+            'total_hours': pack.total_hours,
+            'used_hours': 0,
+            'remaining_hours': pack.total_hours,
+            'status': 'active',
+        }
+    )
+
 
 def send_payment_confirmation_email(user, order):
     """Send branded HTML email confirming payment was received"""
@@ -976,10 +1177,13 @@ def creditcard_success_callback(request):
             pack=order.pack,
             hours_added=order.pack.total_hours
         )
-        
+
+        # Create credit wallet entry
+        create_wallet_entry(user, order.pack, order)
+
         # Send confirmation email
         send_payment_confirmation_email(user, order)
-        
+
         logger.info(f"Credit Card payment confirmed for order {order.order_id}")
         
         # Get frontend URL from settings

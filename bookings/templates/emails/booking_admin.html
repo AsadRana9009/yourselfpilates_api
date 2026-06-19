@@ -1,0 +1,272 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+  <title>Admin — Novo Agendamento</title>
+  <style>
+    @media only screen and (max-width: 620px) {
+      .wrapper { width: 100% !important; padding: 10px !important; }
+      .inner   { padding: 20px 16px !important; }
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f0f1f5;font-family:Arial,Helvetica,sans-serif;">
+
+<table width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="#f0f1f5">
+  <tbody><tr><td align="center" style="padding:24px 12px;">
+
+    <table class="wrapper" width="600" border="0" cellpadding="0" cellspacing="0"
+           style="max-width:600px;width:100%;background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
+      <tbody>
+
+        <!-- ── Header ── -->
+        <tr>
+          <td style="background:linear-gradient(90deg,#15467d,#88a9c3);padding:18px 24px;">
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"><tbody><tr>
+              <td style="vertical-align:middle;">
+                <img src="https://fqpvq9hgvpltg1k_h_q7-z_eydwu150gonvrud1gdho.canva-cdn.email/933e52c616922ba7a09a46470562d5b5.png"
+                     width="140" height="28" style="display:block;" alt="Yourself Pilates">
+              </td>
+              <td align="right" style="vertical-align:middle;color:#ffffff;font-size:13px;font-family:'Century Gothic',Arial,sans-serif;font-weight:700;">
+                Painel de Administração
+              </td>
+            </tr></tbody></table>
+          </td>
+        </tr>
+
+        <!-- ── Alert banner ── -->
+        <tr>
+          <td style="background-color:#1a3a5c;padding:12px 24px;text-align:center;">
+            <span style="color:#ffffff;font-size:15px;font-weight:700;font-family:Montserrat,Arial,sans-serif;letter-spacing:.5px;">
+              &#128274; AGENDAMENTO
+              {% if action == 'criado' %}CRIADO{% else %}ATUALIZADO{% endif %}
+              — #{{ booking_id }}
+            </span>
+          </td>
+        </tr>
+
+        <!-- ── Body ── -->
+        <tr>
+          <td class="inner" style="padding:28px 32px;">
+
+            <!-- Intro -->
+            <p style="margin:0 0 20px;font-size:14px;color:#444444;font-family:Montserrat,Arial,sans-serif;line-height:1.6;">
+              Um novo agendamento foi <strong>{{ action }}</strong> no sistema.
+              Confira todos os detalhes abaixo.
+            </p>
+
+            <!-- ── Section: Criado por ── -->
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"
+                   style="margin-bottom:20px;border-radius:6px;overflow:hidden;border:1px solid #e0e7ef;">
+              <tbody>
+                <tr>
+                  <td colspan="2" style="background-color:#15467d;padding:8px 14px;">
+                    <span style="color:#ffffff;font-size:12px;font-weight:700;font-family:Montserrat,Arial,sans-serif;text-transform:uppercase;letter-spacing:.8px;">
+                      Origem do Agendamento
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Criado por</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ created_by }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Tipo de Agendamento</span>
+                  </td>
+                  <td style="padding:10px 14px;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ booking_type }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- ── Section: Dados do Agendamento ── -->
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"
+                   style="margin-bottom:20px;border-radius:6px;overflow:hidden;border:1px solid #e0e7ef;">
+              <tbody>
+                <tr>
+                  <td colspan="2" style="background-color:#15467d;padding:8px 14px;">
+                    <span style="color:#ffffff;font-size:12px;font-weight:700;font-family:Montserrat,Arial,sans-serif;text-transform:uppercase;letter-spacing:.8px;">
+                      Dados do Agendamento
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">ID</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">#{{ booking_id }}</span>
+                  </td>
+                </tr>
+                {% if title and title != 'N/A' %}
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Título</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ title }}</span>
+                  </td>
+                </tr>
+                {% endif %}
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Data</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ booking_weekday }}, {{ booking_date }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Horário</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ time_slot }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Status</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ status }}</span>
+                  </td>
+                </tr>
+                {% if region_name and region_name != 'N/A' %}
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Espaço / Região</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ region_name }}</span>
+                  </td>
+                </tr>
+                {% endif %}
+                <tr>
+                  <td style="padding:10px 14px;width:35%;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">PIN de Acesso</span>
+                  </td>
+                  <td style="padding:10px 14px;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;font-weight:700;">{{ pin }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- ── Section: Instrutor ── -->
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"
+                   style="margin-bottom:20px;border-radius:6px;overflow:hidden;border:1px solid #e0e7ef;">
+              <tbody>
+                <tr>
+                  <td colspan="2" style="background-color:#15467d;padding:8px 14px;">
+                    <span style="color:#ffffff;font-size:12px;font-weight:700;font-family:Montserrat,Arial,sans-serif;text-transform:uppercase;letter-spacing:.8px;">
+                      Instrutor / Professor
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;border-bottom:1px solid #e8eef5;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">Nome</span>
+                  </td>
+                  <td style="padding:10px 14px;border-bottom:1px solid #e8eef5;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ professor_name }}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:10px 14px;width:35%;background:#f7f9fc;">
+                    <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">E-mail</span>
+                  </td>
+                  <td style="padding:10px 14px;">
+                    <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ professor_email }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- ── Section: Alunos ── -->
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"
+                   style="margin-bottom:20px;border-radius:6px;overflow:hidden;border:1px solid #e0e7ef;">
+              <tbody>
+                <tr>
+                  <td colspan="2" style="background-color:#15467d;padding:8px 14px;">
+                    <span style="color:#ffffff;font-size:12px;font-weight:700;font-family:Montserrat,Arial,sans-serif;text-transform:uppercase;letter-spacing:.8px;">
+                      Aluno(s) — {{ total_students }} inscrito(s)
+                    </span>
+                  </td>
+                </tr>
+                {% if student_details %}
+                  {% for student in student_details %}
+                  <tr>
+                    <td style="padding:10px 14px;width:35%;background:#f7f9fc;{% if not forloop.last %}border-bottom:1px solid #e8eef5;{% endif %}">
+                      <span style="font-size:13px;font-weight:700;color:#15467d;font-family:Montserrat,Arial,sans-serif;">{{ student.name }}</span>
+                    </td>
+                    <td style="padding:10px 14px;{% if not forloop.last %}border-bottom:1px solid #e8eef5;{% endif %}">
+                      <span style="font-size:13px;color:#333333;font-family:Montserrat,Arial,sans-serif;">{{ student.email }}</span>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                {% else %}
+                <tr>
+                  <td colspan="2" style="padding:10px 14px;">
+                    <span style="font-size:13px;color:#888888;font-family:Montserrat,Arial,sans-serif;font-style:italic;">Nenhum aluno associado.</span>
+                  </td>
+                </tr>
+                {% endif %}
+              </tbody>
+            </table>
+
+            <!-- ── Section: Notas ── -->
+            {% if notes and notes != 'N/A' %}
+            <table width="100%" border="0" cellpadding="0" cellspacing="0"
+                   style="margin-bottom:20px;border-radius:6px;overflow:hidden;border:1px solid #e0e7ef;">
+              <tbody>
+                <tr>
+                  <td style="background-color:#15467d;padding:8px 14px;">
+                    <span style="color:#ffffff;font-size:12px;font-weight:700;font-family:Montserrat,Arial,sans-serif;text-transform:uppercase;letter-spacing:.8px;">
+                      Notas
+                    </span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 14px;background:#fffbe6;">
+                    <span style="font-size:13px;color:#555555;font-family:Montserrat,Arial,sans-serif;line-height:1.6;">{{ notes }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            {% endif %}
+
+            <!-- Closing note -->
+            <p style="margin:24px 0 0;font-size:12px;color:#888888;font-family:Arial,sans-serif;line-height:1.5;border-top:1px solid #e8eef5;padding-top:16px;">
+              Este e-mail foi gerado automaticamente pelo sistema Yourself Pilates.
+              Não é necessário responder.
+            </p>
+
+          </td>
+        </tr>
+
+        <!-- ── Footer ── -->
+        <tr>
+          <td style="background-color:#efefef;padding:16px 24px;text-align:center;">
+            <p style="margin:0;font-size:12px;color:#606060;font-family:Arial,sans-serif;">
+              Largo dos Heróis de Naulila, 16 17 Loja 15 · 2500-107 Caldas da Rainha<br>
+              Yourself Pilates &copy; 2026 — All rights reserved.
+            </p>
+          </td>
+        </tr>
+
+      </tbody>
+    </table>
+
+  </td></tr></tbody>
+</table>
+</body>
+</html>

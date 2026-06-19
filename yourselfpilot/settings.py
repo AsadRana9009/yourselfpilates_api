@@ -154,6 +154,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 
 # Media files (user-uploaded content)
@@ -230,22 +231,14 @@ EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.Em
 
 # SMTP Settings (used when EMAIL_BACKEND is smtp)
 # Option 1: Your current SMTP server
-# EMAIL_HOST = 'mail.yourselfpilates.pt'
-# EMAIL_PORT = 587  # Try port 587 with TLS instead of 465 with SSL
-# EMAIL_USE_SSL = False
-# EMAIL_USE_TLS = True  # Enable TLS instead of SSL
-# EMAIL_HOST_USER = 'noreply@yourselfpilates.pt'
-# EMAIL_HOST_PASSWORD = 'B43[21v?YL+!'
-# DEFAULT_FROM_EMAIL = 'noreply@yourselfpilates.pt'
+EMAIL_HOST = 'mail.yourselfpilates.pt'
+EMAIL_PORT = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False
+EMAIL_HOST_USER = 'noreply@yourselfpilates.pt'
+EMAIL_HOST_PASSWORD = 'B43[21v?YL+!'
+DEFAULT_FROM_EMAIL = 'noreply@yourselfpilates.pt'
 
-# Option 2: Gmail SMTP (currently active for testing)
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_SSL = False
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'sanamobin074@gmail.com'
-EMAIL_HOST_PASSWORD = 'rlpi saln bwoi edxn'
-DEFAULT_FROM_EMAIL = 'sanamobin074@gmail.com'
 
 # IGLOO Configuration
 # IGLOO_DEVICE_ID should be set to the Keypad (EK1X...) for algoPIN integration

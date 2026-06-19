@@ -4,6 +4,7 @@ from .views import (
     PackViewSet,
     OrderViewSet,
     RegionViewSet,
+    FreeCreditsView,
     ifthenpay_callback,
     creditcard_success_callback,
     creditcard_error_callback,
@@ -16,6 +17,7 @@ router.register(r"orders", OrderViewSet, basename="orders")
 router.register(r"regions", RegionViewSet, basename="regions")
 
 urlpatterns = [
+    path('free-credits/', FreeCreditsView.as_view(), name='free-credits'),
     path('callback/ifthenpay/', ifthenpay_callback, name='ifthenpay-callback'),
     path('callback/creditcard/success/', creditcard_success_callback, name='creditcard-success'),
     path('callback/creditcard/error/', creditcard_error_callback, name='creditcard-error'),

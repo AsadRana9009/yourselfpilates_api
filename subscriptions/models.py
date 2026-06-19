@@ -138,6 +138,59 @@ class Order(models.Model):
         return f"Order {self.order_id} - {self.user.email} - {self.payment_status}"
 
 
+class CreditWallet(models.Model):
+    STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('expired', 'Expired'),
+        ('consumed', 'Consumed'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='credit_wallets',
+    )
+    pack = models.ForeignKey(
+        'Pack',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='wallet_entries',
+    )
+    order = models.OneToOneField(
+        'Order',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='wallet',
+    )
+    region = models.ForeignKey(
+        'Region',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='wallets',
+    )
+    total_hours = models.DecimalField(max_digits=10, decimal_places=2)
+    used_hours = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    remaining_hours = models.DecimalField(max_digits=10, decimal_places=2)
+    purchase_date = models.DateTimeField(auto_now_add=True)
+    expiry_date = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+
+    class Meta:
+        ordering = ['-purchase_date']
+
+    def save(self, *args, **kwargs):
+        self.remaining_hours = self.total_hours - self.used_hours
+        if self.remaining_hours <= 0 and self.status == 'active':
+            self.status = 'consumed'
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Wallet {self.user.email} – {self.pack.title if self.pack else 'N/A'} ({self.status})"
+
+
 class SubscriptionHistory(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

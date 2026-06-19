@@ -12,7 +12,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 
 from .models import Booking, TIME_SLOTS
-from .serializers import BookingSerializer
+from .serializers import BookingSerializer, send_booking_notifications, send_booking_notifications_async
 
 from django.db.models import Case, When, Value, IntegerField
 from .igloo_utils import delete_igloo_pin_for_booking
@@ -117,17 +117,22 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response(available)
 
     @action(detail=False, methods=['post'])
-    def student_book(self, request):
-        """Allow authenticated students to create a booking with a selected professor."""
-        from user.models import User as UserModel, Student
+    def pro_student_book(self, request):
+        """Allow authenticated pro students to book a professor, deducting from the professor's hours."""
+        from user.models import User as UserModel
         user = request.user
+
+        if getattr(user, 'role', None) != 'student' or getattr(user, 'is_public', True):
+            return Response(
+                {"error": "Only pro students can use this endpoint."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         professor_id = request.data.get('professor')
         booking_date = request.data.get('booking_date')
         time_slot = request.data.get('time_slot')
         notes = request.data.get('notes', '')
         title = request.data.get('title', '')
-        region_id = request.data.get('region')
 
         if not all([professor_id, booking_date, time_slot]):
             return Response(
@@ -136,9 +141,23 @@ class BookingViewSet(viewsets.ModelViewSet):
             )
 
         try:
-            professor = UserModel.objects.get(id=professor_id, role__in=['professor', 'teacher'])
+            professor = UserModel.objects.get(
+                id=professor_id,
+                role__in=['professor', 'teacher'],
+                is_active=True,
+            )
         except UserModel.DoesNotExist:
-            return Response({"error": "Professor not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"error": "Professor not found or is no longer active."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Check student's own remaining hours (pro students buy packs and spend their own credits)
+        if (user.remaining_hours or Decimal('0')) < 1:
+            return Response(
+                {"error": "Insufficient hours. Please purchase a pack before booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             bd = datetime.strptime(booking_date, '%Y-%m-%d').date()
@@ -148,31 +167,16 @@ class BookingViewSet(viewsets.ModelViewSet):
         if bd < timezone.now().date():
             return Response({"error": "Booking date must be in the future"}, status=status.HTTP_400_BAD_REQUEST)
 
-        if Booking.objects.filter(booking_date=booking_date, time_slot=time_slot).exclude(status='cancelled').exists():
-            return Response({"error": "This time slot is already booked"}, status=status.HTTP_400_BAD_REQUEST)
-
-        if professor.remaining_hours < 1:
-            return Response(
-                {"error": "The selected professor does not have sufficient hours available"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        from subscriptions.models import Region
-        region = None
-        if region_id:
-            try:
-                region = Region.objects.get(id=region_id)
-            except Region.DoesNotExist:
-                pass
+        if Booking.objects.filter(booking_date=bd, time_slot=time_slot, professor=professor).exclude(status='cancelled').exists():
+            return Response({"error": "This time slot is already booked for this professor"}, status=status.HTTP_400_BAD_REQUEST)
 
         booking = Booking.objects.create(
             professor=professor,
-            booking_date=booking_date,
+            booking_date=bd,
             time_slot=time_slot,
             notes=notes,
             title=title or f"Booking by {user.full_name}",
-            booking_type='public',
-            region=region,
+            booking_type='pro',
         )
 
         try:
@@ -183,9 +187,136 @@ class BookingViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        professor.remaining_hours = professor.remaining_hours - Decimal('1')
-        professor.used_hours = (professor.used_hours or 0) + 1
-        professor.save(update_fields=['remaining_hours', 'used_hours'])
+        # Deduct 1 hour from the student's own credits
+        user.used_hours = (user.used_hours or Decimal('0')) + Decimal('1')
+        user.remaining_hours = max(Decimal('0'), (user.remaining_hours or Decimal('0')) - Decimal('1'))
+        user.save(update_fields=["used_hours", "remaining_hours"])
+
+        send_booking_notifications_async(booking, 'created', created_by_role='pro_student')
+
+        serializer = self.get_serializer(booking)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'])
+    def student_book(self, request):
+        """Allow authenticated public students to book a public professor in a specific region."""
+        from user.models import User as UserModel, Student
+        from subscriptions.models import Region, Order, CreditWallet
+        from django.db.models import Sum
+        user = request.user
+
+        # Only public students (self-registered) may independently book
+        if getattr(user, 'role', None) == 'student' and not getattr(user, 'is_public', False):
+            return Response(
+                {"error": "Pro Professor Students cannot independently book classes. Contact your professor."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        professor_id = request.data.get('professor')
+        booking_date = request.data.get('booking_date')
+        time_slot = request.data.get('time_slot')
+        region_id = request.data.get('region')
+        notes = request.data.get('notes', '')
+        title = request.data.get('title', '')
+
+        if not all([professor_id, booking_date, time_slot, region_id]):
+            return Response(
+                {"error": "professor, booking_date, time_slot, and region are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Only active public professors can be booked via this endpoint
+        try:
+            professor = UserModel.objects.get(
+                id=professor_id,
+                role__in=['professor', 'teacher'],
+                is_public=True,
+                is_active=True,
+            )
+        except UserModel.DoesNotExist:
+            return Response(
+                {"error": "Public professor not found or is no longer active."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Resolve region — must exist and be active
+        try:
+            region = Region.objects.get(id=region_id, is_active=True)
+        except Region.DoesNotExist:
+            return Response({"error": "Region not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Professor must belong to the same region as the booking
+        if professor.region_id != region.id:
+            return Response(
+                {"error": f"This professor is not available in the selected region."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            bd = datetime.strptime(booking_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({"error": "Invalid date format. Use YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if bd < timezone.now().date():
+            return Response({"error": "Booking date must be in the future"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Booking.objects.filter(booking_date=bd, time_slot=time_slot).exclude(status='cancelled').exists():
+            return Response({"error": "This time slot is already booked"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check student's available credits for this region via CreditWallet
+        # (covers both real purchases and free credits added by admins)
+        wallet_remaining = CreditWallet.objects.filter(
+            user=user,
+            region=region,
+            status='active',
+        ).aggregate(total=Sum('remaining_hours'))['total'] or 0
+
+        try:
+            student_profile = user.student_profile
+        except Exception:
+            student_profile = None
+
+        if wallet_remaining < 1:
+            return Response(
+                {
+                    "error": (
+                        f"No credits available for region '{region.name}'. "
+                        "Please purchase a pack for this region to book a class."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booking = Booking.objects.create(
+            professor=professor,
+            booking_date=bd,          # use the parsed date object, not the raw string
+            time_slot=time_slot,
+            notes=notes,
+            title=title or f"Booking by {user.full_name}",
+            booking_type='public',
+            region=region,
+        )
+
+        if student_profile:
+            booking.students.add(student_profile)
+            booking.total_students = booking.students.count()
+            booking.save(update_fields=['total_students'])
+
+        # Deduct 1 hour from the student's oldest active CreditWallet entry for this region
+        wallet = CreditWallet.objects.filter(
+            user=user,
+            region=region,
+            status='active',
+        ).order_by('purchase_date').first()
+        if wallet:
+            wallet.used_hours += 1
+            wallet.save()
+        # Mirror deduction on the User record so the dashboard reflects it
+        user.used_hours = (user.used_hours or 0) + 1
+        user.remaining_hours = max(0, (user.remaining_hours or 0) - 1)
+        user.save(update_fields=['used_hours', 'remaining_hours'])
+
+        send_booking_notifications_async(booking, 'created', created_by_role='student')
 
         serializer = self.get_serializer(booking)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -193,10 +324,10 @@ class BookingViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         if not self.request.user.role == 'admin':
             booking = serializer.save(professor=self.request.user)
-            # Increment used_hours for the professor by 1
             professor = self.request.user
             professor.used_hours = (professor.used_hours or 0) + 1
-            professor.save(update_fields=["used_hours"])
+            professor.remaining_hours = max(0, (professor.remaining_hours or 0) - 1)
+            professor.save(update_fields=["used_hours", "remaining_hours"])
         else:
             serializer.save()
     
@@ -232,17 +363,41 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        # If cancelling/rejecting, increment remaining_hours and decrement used_hours for professor
-        if new_status == 'cancelled' and booking.professor and booking.professor.role in ['professor', 'teacher']:
-            from decimal import Decimal
-            booking.professor.remaining_hours = booking.professor.remaining_hours + Decimal('1')
-            # Decrement used_hours, but not below zero
-            if booking.professor.used_hours is not None:
-                booking.professor.used_hours = max(booking.professor.used_hours - 1, 0)
-            else:
-                booking.professor.used_hours = 0
-            booking.professor.save(update_fields=["remaining_hours", "used_hours"])
-            
+        if new_status == 'cancelled':
+            if booking.booking_type == 'pro':
+                from decimal import Decimal
+                student_profile = booking.students.first()
+                student_user = student_profile.user if student_profile else None
+                # If booked by a pro student (student has their own remaining_hours), restore student credits
+                if student_user and student_user.role == 'student' and not student_user.is_public:
+                    student_user.remaining_hours = (student_user.remaining_hours or Decimal('0')) + Decimal('1')
+                    student_user.used_hours = max(Decimal('0'), (student_user.used_hours or Decimal('0')) - Decimal('1'))
+                    student_user.save(update_fields=["remaining_hours", "used_hours"])
+                # If booked by a professor (old flow), restore professor's credit
+                elif booking.professor and booking.professor.role in ['professor', 'teacher']:
+                    booking.professor.remaining_hours = booking.professor.remaining_hours + Decimal('1')
+                    booking.professor.used_hours = max(Decimal('0'), (booking.professor.used_hours or Decimal('0')) - Decimal('1'))
+                    booking.professor.save(update_fields=["remaining_hours", "used_hours"])
+
+            # Public bookings: restore the student's CreditWallet credit
+            if booking.booking_type == 'public' and booking.region:
+                from subscriptions.models import CreditWallet
+                student_profile = booking.students.first()
+                if student_profile and student_profile.user:
+                    student_user = student_profile.user
+                    # Find the wallet entry most recently debited (highest used_hours first)
+                    wallet = CreditWallet.objects.filter(
+                        user=student_user,
+                        region=booking.region,
+                    ).exclude(status='cancelled').order_by('-used_hours', 'purchase_date').first()
+                    if wallet and wallet.used_hours > 0:
+                        wallet.used_hours = max(0, wallet.used_hours - 1)
+                        wallet.save()
+                    # Mirror restoration on the User record
+                    student_user.used_hours = max(0, (student_user.used_hours or 0) - 1)
+                    student_user.remaining_hours = (student_user.remaining_hours or 0) + 1
+                    student_user.save(update_fields=['used_hours', 'remaining_hours'])
+
         # If cancelling, delete the Igloo PIN (if exists)
         if new_status == 'cancelled' and booking.igloo_pin:
             delete_igloo_pin_for_booking(booking)

@@ -1,4 +1,15 @@
 from rest_framework.permissions import IsAuthenticated, AllowAny
+
+
+def get_display_role(user):
+    """Return a human-readable role label: Pro/Public Professor/Student."""
+    role = getattr(user, 'role', '')
+    is_public = getattr(user, 'is_public', False)
+    if role in ('professor', 'teacher'):
+        return 'Public Professor' if is_public else 'Pro Professor'
+    if role == 'student':
+        return 'Public Student' if is_public else 'Pro Student'
+    return role.capitalize() if role else 'Unknown'
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import generics, viewsets, status, permissions
@@ -24,6 +35,7 @@ from .models import PasswordResetOTP
 from .serializers import RequestPasswordResetOTPSerializer, VerifyPasswordResetOTPSerializer, ConfirmPasswordResetOTPSerializer, ResetPasswordWithOTPSerializer
 from django.utils import timezone
 import random
+import threading
 
 
 class StudentRegistrationView(APIView):
@@ -77,43 +89,44 @@ class StudentRegistrationView(APIView):
                     registration_data=registration_data
                 )
 
-                # Send verification email
-                send_mail(
-                    'Verify Your Email Address - Yourself Pilates',
-                    (
-                        f'Dear {validated_data.get("full_name")},\n\n'
-                        f'Thank you for registering as a student on Yourself Pilates!\n'
-                        f'\n'
-                        f'Please use the following One-Time Password (OTP) to verify your email address:\n'
-                        f'\n'
-                        f'OTP: {otp_code}\n'
-                        f'\n'
-                        f'This OTP is valid for 30 minutes. After verification, you can log in to your account.\n'
-                        f'\n'
-                        f'If you did not register for an account, please ignore this email or contact support.\n\n'
-                        f'Best regards,\nYourself Pilates Team'
-                    ),
-                    settings.DEFAULT_FROM_EMAIL,
-                    [email],
-                    fail_silently=False,
-                )
+                # Send email in a background thread so the response is instant
+                full_name = validated_data.get('full_name')
+                def _send():
+                    try:
+                        send_mail(
+                            'Verify Your Email Address - Yourself Pilates',
+                            (
+                                f'Dear {full_name},\n\n'
+                                f'Thank you for registering as a student on Yourself Pilates!\n'
+                                f'\n'
+                                f'Please use the following One-Time Password (OTP) to verify your email address:\n'
+                                f'\n'
+                                f'OTP: {otp_code}\n'
+                                f'\n'
+                                f'This OTP is valid for 30 minutes. After verification, you can log in to your account.\n'
+                                f'\n'
+                                f'If you did not register for an account, please ignore this email or contact support.\n\n'
+                                f'Best regards,\nYourself Pilates Team'
+                            ),
+                            settings.DEFAULT_FROM_EMAIL,
+                            [email],
+                            fail_silently=True,
+                        )
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_send, daemon=True).start()
 
                 return Response({
                     "message": "Student registered successfully. Please check your email for the verification code.",
                     "email": email,
-                    "full_name": validated_data.get('full_name'),
+                    "full_name": full_name,
                     "next_step": "Please verify your email using the OTP sent to your email address."
                 }, status=status.HTTP_201_CREATED)
 
             except Exception as e:
-                # If email sending fails, clean up and return error
-                try:
-                    EmailVerificationOTP.objects.filter(email=email, code=otp_code).delete()
-                except:
-                    pass  # Best effort cleanup
-
                 return Response({
-                    "error": "Failed to send verification email. Please try again later.",
+                    "error": "Registration failed. Please try again later.",
                     "details": str(e)
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -158,8 +171,11 @@ class StudentLoginView(APIView):
                     "email": user.email,
                     "full_name": user.full_name,
                     "role": user.role,
+                    "display_role": get_display_role(user),
+                    "is_public": user.is_public,
                     "contact_number": user.contact_number,
                     "is_verified": is_verified,
+                    "region_id": user.region_id,
                 },
                 "tokens": {
                     "refresh": str(refresh),
@@ -172,6 +188,9 @@ class StudentLoginView(APIView):
 
 class LoginView(APIView):
     """Login endpoint that returns a Django auth token along with user details."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
     @extend_schema(request=AuthTokenSerializer)
     def post(self, request):
         serializer = AuthTokenSerializer(data=request.data, context={'request': request})
@@ -183,7 +202,10 @@ class LoginView(APIView):
             'email': user.email,
             'full_name': user.full_name,
             'role': user.role,
+            'display_role': get_display_role(user),
+            'is_public': user.is_public,
             'user_id': str(user.pk),
+            'region_id': user.region_id,
         })
 
 
@@ -389,12 +411,11 @@ class StudentViewSet(viewsets.ModelViewSet):
         super().perform_destroy(instance)
 
     def perform_create(self, serializer):
-        from user.models import User
-        from dashboard.models import StudentVisit
+        from user.models import User, Student
         email = serializer.validated_data.get('email')
         full_name = serializer.validated_data.get('full_name')
         contact_number = serializer.validated_data.get('contact_number')
-        # Check if a user with this email and role=student exists
+        region = serializer.validated_data.get('region')
         user, created = User.objects.get_or_create(
             email=email,
             defaults={
@@ -402,14 +423,24 @@ class StudentViewSet(viewsets.ModelViewSet):
                 'full_name': full_name,
                 'contact_number': contact_number,
                 'is_active': True,
+                'region': region,
             }
         )
-        # If user exists but is not a student, update role
         if user.role != 'student':
             user.role = 'student'
             user.save()
-        # Save the Student and link to User
-        serializer.save(user=user, is_public=False)
+        # Keep User.region in sync with Student.region
+        if region and user.region != region:
+            user.region = region
+            user.save(update_fields=['region'])
+        # If a Student record was auto-created by the post_save signal, update it
+        # instead of inserting a duplicate (which would violate the unique user_id key).
+        existing = Student.objects.filter(user=user).first()
+        if existing:
+            serializer.instance = existing
+        # Auto-assign the requesting professor as the student's owner
+        professor = self.request.user if self.request.user.role in ['professor', 'teacher'] else None
+        serializer.save(user=user, is_public=False, professor=professor)
         
     queryset = Student.objects.all()
     serializer_class = StudentSerializer
@@ -417,8 +448,13 @@ class StudentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.role == 'professor':
-            queryset = Student.objects.filter(professor=user)
+        if user.role in ['professor', 'teacher']:
+            if user.is_public:
+                # Public professors can see public students in their region
+                queryset = Student.objects.filter(is_public=True, region=user.region)
+            else:
+                # Pro professors see only their assigned students
+                queryset = Student.objects.filter(professor=user)
         elif user.role == 'admin':
             queryset = Student.objects.all()
         else:
@@ -500,24 +536,30 @@ class RequestPasswordResetOTPView(APIView):
             expires_at = timezone.now() + timezone.timedelta(minutes=10)
             PasswordResetOTP.objects.create(user=user, code=otp_code, expires_at=expires_at)
 
-            # Send email
-            send_mail(
-                'Password Reset OTP',
-                (
-                    f'Dear {user.full_name},\n\n'
-                    f'We have received a request to reset the password for your account associated with this email address.\n'
-                    f'\n'
-                    f'Please use the following One-Time Password (OTP) to proceed with resetting your password:\n'
-                    f'\n'
-                    f'OTP: {otp_code}\n'
-                    f'\n'
-                    f'This OTP is valid for 10 minutes. If you did not request a password reset, please ignore this email or contact support.\n\n'
-                    f'Best regards,\nYourself Pilates Team'
-                ),
-                settings.DEFAULT_FROM_EMAIL,
-                [user.email],
-                fail_silently=False,
-            )
+            _user_email = user.email
+            _user_name = user.full_name
+            def _send_reset():
+                try:
+                    send_mail(
+                        'Password Reset OTP',
+                        (
+                            f'Dear {_user_name},\n\n'
+                            f'We have received a request to reset the password for your account associated with this email address.\n'
+                            f'\n'
+                            f'Please use the following One-Time Password (OTP) to proceed with resetting your password:\n'
+                            f'\n'
+                            f'OTP: {otp_code}\n'
+                            f'\n'
+                            f'This OTP is valid for 10 minutes. If you did not request a password reset, please ignore this email or contact support.\n\n'
+                            f'Best regards,\nYourself Pilates Team'
+                        ),
+                        settings.DEFAULT_FROM_EMAIL,
+                        [_user_email],
+                        fail_silently=True,
+                    )
+                except Exception:
+                    pass
+            threading.Thread(target=_send_reset, daemon=True).start()
             return Response({'message': 'OTP sent to your email for verification.'})
 
         except Exception as e:
@@ -727,24 +769,7 @@ class VerifyGmailEmailView(APIView):
                     # OTP is valid - create the user now
                     registration_data = otp_obj.registration_data
 
-                    # Create user with hashed password
-                    user = get_user_model().objects.create_user(
-                        email=registration_data['email'],
-                        password=registration_data['password'],
-                        full_name=registration_data['full_name'],
-                        contact_number=registration_data['contact_number'],
-                        role=registration_data['role'],
-                        is_student=registration_data['is_student'],
-                        is_public=registration_data['is_public'],
-                        is_active=registration_data['is_active']
-                    )
-
-                    # Mark OTP as used and link to user
-                    otp_obj.is_used = True
-                    otp_obj.user = user
-                    otp_obj.save()
-
-                    # Resolve region from registration_data if provided
+                    # Resolve region before creating user so it's set on both User and Student
                     from subscriptions.models import Region as RegionModel
                     region_id = registration_data.get('region_id')
                     region_obj = None
@@ -753,6 +778,24 @@ class VerifyGmailEmailView(APIView):
                             region_obj = RegionModel.objects.get(id=region_id)
                         except RegionModel.DoesNotExist:
                             pass
+
+                    # Create user with hashed password (region set here too)
+                    user = get_user_model().objects.create_user(
+                        email=registration_data['email'],
+                        password=registration_data['password'],
+                        full_name=registration_data['full_name'],
+                        contact_number=registration_data['contact_number'],
+                        role=registration_data['role'],
+                        is_student=registration_data['is_student'],
+                        is_public=registration_data['is_public'],
+                        is_active=registration_data['is_active'],
+                        region=region_obj,
+                    )
+
+                    # Mark OTP as used and link to user
+                    otp_obj.is_used = True
+                    otp_obj.user = user
+                    otp_obj.save()
 
                     # Create or update student record with verified status
                     from .models import Student
@@ -789,6 +832,7 @@ class VerifyGmailEmailView(APIView):
                             "email": user.email,
                             "full_name": user.full_name,
                             "role": user.role,
+                            "display_role": get_display_role(user),
                             "is_verified": True,
                         },
                         "tokens": {
@@ -868,25 +912,33 @@ class ResendVerificationOTPView(APIView):
                     registration_data=registration_data or {}
                 )
 
-                # Send verification email
+                # Send verification email in background so response is instant
                 full_name = user.full_name if user else (registration_data.get('full_name') if registration_data else 'Student')
-                send_mail(
-                    'Verify Your Email Address - Yourself Pilates',
-                    (
-                        f'Dear {full_name},\n\n'
-                        f'Here is your new verification code for your student account:\n'
-                        f'\n'
-                        f'OTP: {otp_code}\n'
-                        f'\n'
-                        f'This OTP is valid for 30 minutes.\n'
-                        f'\n'
-                        f'If you did not request this code, please ignore this email or contact support.\n\n'
-                        f'Best regards,\nYourself Pilates Team'
-                    ),
-                    settings.DEFAULT_FROM_EMAIL,
-                    [email],
-                    fail_silently=False,
-                )
+                _resend_email = email
+                _resend_name = full_name
+                _resend_code = otp_code
+                def _send_resend():
+                    try:
+                        send_mail(
+                            'Verify Your Email Address - Yourself Pilates',
+                            (
+                                f'Dear {_resend_name},\n\n'
+                                f'Here is your new verification code for your student account:\n'
+                                f'\n'
+                                f'OTP: {_resend_code}\n'
+                                f'\n'
+                                f'This OTP is valid for 30 minutes.\n'
+                                f'\n'
+                                f'If you did not request this code, please ignore this email or contact support.\n\n'
+                                f'Best regards,\nYourself Pilates Team'
+                            ),
+                            settings.DEFAULT_FROM_EMAIL,
+                            [_resend_email],
+                            fail_silently=True,
+                        )
+                    except Exception:
+                        pass
+                threading.Thread(target=_send_resend, daemon=True).start()
 
                 return Response({
                     "message": "New verification code sent to your email address.",
@@ -909,6 +961,9 @@ class ProfessorsListView(APIView):
         region = request.query_params.get('region')
         if region:
             qs = qs.filter(region=region)
+        is_public = request.query_params.get('is_public')
+        if is_public is not None:
+            qs = qs.filter(is_public=is_public.lower() == 'true')
         professors = qs.values('id', 'full_name', 'email').order_by('full_name')
         return Response(list(professors))
 
