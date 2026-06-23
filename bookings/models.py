@@ -49,6 +49,14 @@ class Booking(models.Model):
         limit_choices_to={'role__in': ['professor', 'teacher']},
         related_name='professor_bookings'
     )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_bookings',
+        help_text="User who originally created the booking (for credit purposes)"
+    )
     students = models.ManyToManyField(
         Student,
         related_name='student_bookings'

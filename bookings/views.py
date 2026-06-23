@@ -179,6 +179,7 @@ class BookingViewSet(viewsets.ModelViewSet):
             notes=notes,
             title=title or f"Booking by {user.full_name}",
             booking_type='pro',
+            created_by=user
         )
 
         try:
@@ -298,6 +299,7 @@ class BookingViewSet(viewsets.ModelViewSet):
             title=title or f"Booking by {user.full_name}",
             booking_type='public',
             region=region,
+            created_by=user,
         )
 
         if student_profile:
@@ -322,7 +324,7 @@ class BookingViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         if not self.request.user.role == 'admin':
-            booking = serializer.save(professor=self.request.user)
+            booking = serializer.save(professor=self.request.user, created_by=self.request.user)
             professor = self.request.user
             professor.used_hours = (professor.used_hours or 0) + 1
             professor.remaining_hours = max(0, (professor.remaining_hours or 0) - 1)
@@ -382,19 +384,12 @@ class BookingViewSet(viewsets.ModelViewSet):
         if new_status == 'cancelled':
             from decimal import Decimal
 
-            if booking.booking_type == 'pro':
-                student_profile = booking.students.first()
-                student_user = student_profile.user if student_profile else None
-                # Booking was made by a pro student — restore student's credits
-                if student_user and student_user.role == 'student' and not student_user.is_public:
-                    student_user.remaining_hours = (student_user.remaining_hours or Decimal('0')) + Decimal('1')
-                    student_user.used_hours = max(Decimal('0'), (student_user.used_hours or Decimal('0')) - Decimal('1'))
-                    student_user.save(update_fields=["remaining_hours", "used_hours"])
-                # Booking was made by a professor — restore professor's credits
-                elif booking.professor and booking.professor.role in ['professor', 'teacher']:
-                    booking.professor.remaining_hours = (booking.professor.remaining_hours or Decimal('0')) + Decimal('1')
-                    booking.professor.used_hours = max(Decimal('0'), (booking.professor.used_hours or Decimal('0')) - Decimal('1'))
-                    booking.professor.save(update_fields=["remaining_hours", "used_hours"])
+            # For 'pro' bookings, refund the user who created the booking
+            if booking.booking_type == 'pro' and booking.created_by:
+                creator = booking.created_by
+                creator.remaining_hours = (creator.remaining_hours or Decimal('0')) + Decimal('1')
+                creator.used_hours = max(Decimal('0'), (creator.used_hours or Decimal('0')) - Decimal('1'))
+                creator.save(update_fields=["remaining_hours", "used_hours"])
 
             # Public bookings: restore the student's CreditWallet credit
             elif booking.booking_type == 'public' and booking.region:
