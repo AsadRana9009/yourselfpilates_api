@@ -6,6 +6,20 @@ import uuid
 class Region(models.Model):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
+    location = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Address of this gym location",
+    )
+    email = models.EmailField(
+        blank=True,
+        help_text="Contact email for this gym location",
+    )
+    phone = models.CharField(
+        max_length=30,
+        blank=True,
+        help_text="Contact phone number for this gym location",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

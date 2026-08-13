@@ -5,9 +5,9 @@ from .models import Pack, SubscriptionHistory, Order, CreditWallet, Region, Pack
 
 @admin.register(Region)
 class RegionAdmin(admin.ModelAdmin):
-    list_display = ['id', 'name', 'slug', 'is_active', 'created_at']
+    list_display = ['id', 'name', 'slug', 'location', 'email', 'phone', 'is_active', 'created_at']
     list_filter = ['is_active']
-    search_fields = ['name', 'slug']
+    search_fields = ['name', 'slug', 'location', 'email', 'phone']
     prepopulated_fields = {'slug': ('name',)}
     readonly_fields = ['created_at']
 

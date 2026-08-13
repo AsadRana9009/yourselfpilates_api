@@ -469,23 +469,26 @@ class UserAdminSerializer(serializers.ModelSerializer):
             if user.role == 'professor':
                 from django.core.mail import send_mail
                 from django.conf import settings
-                send_mail(
-                    'Your Account Has Been Created',
-                    (
-                        f'Dear {user.full_name},\n\n'
-                        f'We are pleased to inform you that your account has been successfully created on Yourself Pilates.\n'
-                        f'\n'
-                        f'You may now log in using the following credentials:\n'
-                        f'Email: {user.email}\n'
-                        f'Password: {password}\n'
-                        f'\n'
-                        f'For security reasons, we recommend changing your password after your first login. If you have any questions or require assistance, please contact our support team.\n\n'
-                        f'Best regards,\nYourself Pilates Team'
-                    ),
-                    settings.DEFAULT_FROM_EMAIL,
-                    [user.email],
-                    fail_silently=False,
-                )
+                try:
+                    send_mail(
+                        'Your Account Has Been Created',
+                        (
+                            f'Dear {user.full_name},\n\n'
+                            f'We are pleased to inform you that your account has been successfully created on Yourself Pilates.\n'
+                            f'\n'
+                            f'You may now log in using the following credentials:\n'
+                            f'Email: {user.email}\n'
+                            f'Password: {password}\n'
+                            f'\n'
+                            f'For security reasons, we recommend changing your password after your first login. If you have any questions or require assistance, please contact our support team.\n\n'
+                            f'Best regards,\nYourself Pilates Team'
+                        ),
+                        settings.DEFAULT_FROM_EMAIL,
+                        [user.email],
+                        fail_silently=True,
+                    )
+                except Exception:
+                    pass
             user.set_password(password)
         # Public professor: added by admin, so is_public=True
         if user.role == 'professor':
