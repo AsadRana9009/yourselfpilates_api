@@ -20,6 +20,16 @@ class Region(models.Model):
         blank=True,
         help_text="Contact phone number for this gym location",
     )
+    wifi_name = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Guest Wi-Fi network shown on this location's TV screens",
+    )
+    wifi_password = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Guest Wi-Fi password shown on this location's TV screens",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

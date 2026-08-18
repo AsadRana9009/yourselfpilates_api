@@ -6,7 +6,10 @@ from .models import Pack, SubscriptionHistory, Order, Region, PackRegionPrice
 class RegionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Region
-        fields = ['id', 'name', 'slug', 'location', 'email', 'phone', 'is_active', 'created_at']
+        fields = [
+            'id', 'name', 'slug', 'location', 'email', 'phone',
+            'wifi_name', 'wifi_password', 'is_active', 'created_at',
+        ]
         read_only_fields = ['id', 'created_at']
 
 

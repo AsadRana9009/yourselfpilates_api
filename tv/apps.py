@@ -1,0 +1,7 @@
+from django.apps import AppConfig
+
+
+class TvConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'tv'
+    verbose_name = 'TV Display'

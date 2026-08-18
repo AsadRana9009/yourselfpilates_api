@@ -224,9 +224,25 @@ class BookingSerializer(serializers.ModelSerializer):
     def validate(self, data):
         requesting_user = self.context['request'].user
 
-        # Pro professor bookings have no region
-        if data.get('booking_type') == 'pro':
-            data['region'] = None
+        # Every booking happens at a physical location, pro ones included: the
+        # TV screens are region-scoped and only greet the class running in
+        # their own region, so a booking without one is invisible everywhere.
+        # Fall back to whoever the class belongs to when the caller (a
+        # professor, who has no region picker) does not send one.
+        if not data.get('region'):
+            professor = data.get('professor') or getattr(self.instance, 'professor', None)
+            data['region'] = (
+                getattr(self.instance, 'region', None)
+                or getattr(professor, 'region', None)
+                or getattr(requesting_user, 'region', None)
+            )
+        if not data.get('region'):
+            raise serializers.ValidationError({
+                'region': (
+                    'A region is required so the class shows on that location\'s '
+                    'screen. Pick one, or assign a region to the professor.'
+                )
+            })
 
         # Pro professors can only attach their own assigned students.
         # Public professors can attach any public student from their region.
@@ -256,14 +272,46 @@ class BookingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Booking date must be in the future")
 
         if 'booking_date' in data and 'time_slot' in data:
+            # Scoped to the region: the studios are in different towns, so the
+            # same hour can run at each of them at once.
             existing = Booking.objects.filter(
                 booking_date=data['booking_date'],
-                time_slot=data['time_slot']
+                time_slot=data['time_slot'],
+                region=data.get('region'),
             ).exclude(status='cancelled')
             if self.instance:
                 existing = existing.exclude(pk=self.instance.pk)
             if existing.exists():
-                raise serializers.ValidationError("This time slot is already booked")
+                raise serializers.ValidationError(
+                    "This time slot is already booked at that location"
+                )
+
+            # The slot itself is per location, but a student is not: nobody can
+            # be in two studios at once. Without this an hour free in Oeiras
+            # happily accepts someone already booked in Caldas, and both
+            # screens then greet them.
+            students = data.get('students')
+            if students is None and self.instance:
+                students = list(self.instance.students.all())
+            if students:
+                clashes = Booking.objects.filter(
+                    booking_date=data['booking_date'],
+                    time_slot=data['time_slot'],
+                    students__in=students,
+                ).exclude(status='cancelled')
+                if self.instance:
+                    clashes = clashes.exclude(pk=self.instance.pk)
+                busy = sorted({
+                    student.full_name
+                    for booking in clashes.prefetch_related('students')
+                    for student in booking.students.all()
+                    if student in students
+                })
+                if busy:
+                    raise serializers.ValidationError(
+                        'Already booked elsewhere at this time: '
+                        + ', '.join(busy)
+                    )
 
         # Only check remaining_hours for new bookings (not updates)
         # Admin can always create bookings regardless of professor's hours

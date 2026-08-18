@@ -69,7 +69,7 @@ class Booking(models.Model):
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default='approve'
+        default='confirmed'
     )
     approve = models.BooleanField(default=False)
 
@@ -97,11 +97,14 @@ class Booking(models.Model):
         self.total_students = self.students.count() 
 
     def clean(self):
+        # One slot per region, not one slot everywhere — each region is its own
+        # studio and they run their hours independently.
         if Booking.objects.filter(
             booking_date=self.booking_date,
-            time_slot=self.time_slot
+            time_slot=self.time_slot,
+            region=self.region,
         ).exclude(status='cancelled').exclude(pk=self.pk).exists():
-            raise ValidationError("This time slot is already booked")
+            raise ValidationError("This time slot is already booked at that location")
 
     def __str__(self):
         return f"{self.booking_date} {self.get_time_slot_display()} - {self.professor.full_name}"

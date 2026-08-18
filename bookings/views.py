@@ -98,7 +98,14 @@ class BookingViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['get'])
     def available_slots(self, request):
-        """Get all available slots for a specific date"""
+        """
+        Available slots for a date, at one location.
+
+        Each region is a separate gym with its own studio, so an hour taken in
+        Caldas says nothing about the same hour in Oeiras. Without `region` the
+        answer spans every location, which is only right for a caller that has
+        not chosen one yet.
+        """
         date = request.query_params.get('date')
         if not date:
             return Response(
@@ -106,9 +113,19 @@ class BookingViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        booked_slots = Booking.objects.filter(
-            booking_date=date
-        ).exclude(status='cancelled').values_list('time_slot', flat=True)
+        taken = Booking.objects.filter(booking_date=date).exclude(status='cancelled')
+
+        region = request.query_params.get('region')
+        if region:
+            try:
+                taken = taken.filter(region_id=int(region))
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "Region must be a numeric id"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        booked_slots = taken.values_list('time_slot', flat=True)
 
         available = [
             {'value': slot[0], 'display': slot[1]}

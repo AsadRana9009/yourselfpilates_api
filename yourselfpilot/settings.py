@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'subscriptions',
     'user.apps.UserConfig',
+    'tv.apps.TvConfig',
 ]
 
 MIDDLEWARE = [
@@ -72,6 +73,8 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
     'https://yourselfpilates.pt',
     'https://backend.yourselfpilates.pt',
 ]
@@ -156,6 +159,10 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+
+# Wall-clock timezone of the gyms. Bookings are stored as a naive date plus an
+# "HH:MM - HH:MM" label, so the TV screens resolve "now" against this.
+TV_DISPLAY_TIMEZONE = os.getenv('TV_DISPLAY_TIMEZONE', 'Europe/Lisbon')
 
 # Media files (user-uploaded content)
 MEDIA_URL = '/media/'
